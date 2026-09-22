@@ -27,6 +27,11 @@ $script:Mutex = $null
 $script:MixerStarted = $false
 $script:IconBitmaps = @()
 $script:LocalBeepPlayer = $null
+$script:LoggedRemoteSkip = $false
+$script:LoggedMissingCable = $false
+$script:AlertText = $null
+$script:AlertShownAt = [datetime]::MinValue
+$script:DefaultMicCheckedAt = [datetime]::MinValue
 
 $csharp = @'
 using System;
@@ -81,6 +86,8 @@ namespace BeepTone
             catch { }
         }
 
+        public static DateTime LastBeepUtc = DateTime.MinValue;
+
         public static void Heartbeat()
         {
             try
@@ -90,8 +97,12 @@ namespace BeepTone
                 {
                     string dir = Path.GetDirectoryName(HeartbeatPath);
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    string beep = LastBeepUtc == DateTime.MinValue
+                        ? "-"
+                        : LastBeepUtc.ToString("o", CultureInfo.InvariantCulture);
                     string line = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)
-                        + " " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture);
+                        + " " + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture)
+                        + " " + beep;
                     File.WriteAllText(HeartbeatPath, line, Encoding.ASCII);
                 }
             }
@@ -279,6 +290,167 @@ namespace BeepTone
             }
         }
 
+        static int monitorBusy;
+
+        public static AudioEndpoint GetDefaultEndpoint(string flow, int role)
+        {
+            WasapiNative.ComInit();
+            int dataFlow = string.Equals(flow, "Render", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+            Guid enumId = typeof(IMMDeviceEnumerator).GUID;
+            Guid clsid = WasapiNative.ClsidEnumerator;
+            IntPtr enumeratorPtr;
+            int hr = WasapiNative.CoCreateInstance(ref clsid, IntPtr.Zero, 23, ref enumId, out enumeratorPtr);
+            if (hr < 0) return null;
+            try
+            {
+                var enumerator = (IMMDeviceEnumerator)Marshal.GetTypedObjectForIUnknown(enumeratorPtr, typeof(IMMDeviceEnumerator));
+                IntPtr devicePtr;
+                hr = enumerator.GetDefaultAudioEndpoint(dataFlow, role, out devicePtr);
+                Marshal.ReleaseComObject(enumerator);
+                if (hr < 0 || devicePtr == IntPtr.Zero) return null;
+                try
+                {
+                    var device = (IMMDevice)Marshal.GetTypedObjectForIUnknown(devicePtr, typeof(IMMDevice));
+                    AudioEndpoint item = ReadEndpoint(device, flow);
+                    Marshal.ReleaseComObject(device);
+                    return item;
+                }
+                finally { Marshal.Release(devicePtr); }
+            }
+            finally { if (enumeratorPtr != IntPtr.Zero) Marshal.Release(enumeratorPtr); }
+        }
+
+        static bool IsVirtualDevice(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return name.IndexOf("cable", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("voicemeeter", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("vb-audio", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        static AudioEndpoint FindMonitorRender()
+        {
+            AudioEndpoint current = GetDefaultEndpoint("Render", 0);
+            if (current != null && !IsVirtualDevice(current.Name)) return current;
+            AudioEndpoint[] all = List("Render");
+            AudioEndpoint fallback = null;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (IsVirtualDevice(all[i].Name)) continue;
+                if (fallback == null) fallback = all[i];
+                string name = all[i].Name ?? "";
+                if (name.IndexOf("head", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("speaker", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("ear", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return all[i];
+            }
+            return fallback;
+        }
+
+        public static void PlayMonitorAsync(double frequencyHz, int durationMs, int rampMs, float gain)
+        {
+            if (Interlocked.CompareExchange(ref monitorBusy, 1, 0) != 0) return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    WasapiNative.ComInit();
+                    AudioEndpoint device = FindMonitorRender();
+                    if (device == null) return;
+                    int rate = 48000;
+                    float[] tone = BeepSynth.Create(rate, frequencyHz, durationMs, rampMs);
+                    float level = gain;
+                    if (level < 0.001f) level = 0.001f;
+                    if (level > 1f) level = 1f;
+                    for (int i = 0; i < tone.Length; i++) tone[i] = tone[i] * level;
+                    PlayBuffer(device.Id, tone, rate);
+                }
+                catch (Exception ex)
+                {
+                    BeepFiles.Log("headset beep failed: " + ex.Message);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref monitorBusy, 0);
+                }
+            });
+        }
+
+        static void PlayBuffer(string deviceId, float[] samples, int rate)
+        {
+            IMMDevice device = WasapiNative.OpenDevice(deviceId);
+            try
+            {
+                IAudioClient client = WasapiNative.ActivateClient(device);
+                try
+                {
+                    FormatInfo format = WasapiNative.InitializeRender(client, rate);
+                    uint buffer;
+                    int hr = client.GetBufferSize(out buffer);
+                    if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                    IAudioRenderClient render = WasapiNative.GetRender(client);
+                    try
+                    {
+                        hr = client.Start();
+                        if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                        int offset = 0;
+                        while (offset < samples.Length)
+                        {
+                            uint padding;
+                            hr = client.GetCurrentPadding(out padding);
+                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                            int want = (int)buffer - (int)padding;
+                            if (want <= 0)
+                            {
+                                Thread.Sleep(5);
+                                continue;
+                            }
+                            int count = samples.Length - offset;
+                            if (count > want) count = want;
+                            IntPtr data;
+                            hr = render.GetBuffer(count, out data);
+                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                            int channels = format.Channels < 1 ? 1 : format.Channels;
+                            if (format.IsFloat && format.Bits == 32)
+                            {
+                                for (int i = 0; i < count; i++)
+                                {
+                                    float sample = samples[offset + i];
+                                    for (int ch = 0; ch < channels; ch++)
+                                        Marshal.WriteInt32(data, (i * channels + ch) * 4, BitConverter.ToInt32(BitConverter.GetBytes(sample), 0));
+                                }
+                            }
+                            else
+                            {
+                                for (int i = 0; i < count; i++)
+                                {
+                                    float sample = samples[offset + i];
+                                    if (sample > 1f) sample = 1f;
+                                    if (sample < -1f) sample = -1f;
+                                    short pcm = (short)Math.Round(sample * 32767f);
+                                    for (int ch = 0; ch < channels; ch++)
+                                        Marshal.WriteInt16(data, (i * channels + ch) * 2, pcm);
+                                }
+                            }
+                            hr = render.ReleaseBuffer(count, 0);
+                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+                            offset += count;
+                        }
+                        for (int i = 0; i < 40; i++)
+                        {
+                            uint padding;
+                            if (client.GetCurrentPadding(out padding) < 0 || padding == 0) break;
+                            Thread.Sleep(10);
+                        }
+                        client.Stop();
+                    }
+                    finally { Marshal.ReleaseComObject(render); }
+                }
+                finally { Marshal.ReleaseComObject(client); }
+            }
+            finally { Marshal.ReleaseComObject(device); }
+        }
+
         static AudioEndpoint ReadEndpoint(IMMDevice device, string flow)
         {
             IntPtr idPtr;
@@ -327,14 +499,20 @@ namespace BeepTone
         string balloon;
         string balloonTitle;
         DateTime lastBeepLocal = DateTime.MinValue;
+        DateTime runningSince = DateTime.MinValue;
         int beepCount;
+        float lastBeepGain;
+        string problem;
         bool sawFailure;
         bool running;
 
         public string Status { get { lock (gate) return status; } }
         public bool IsRunning { get { lock (gate) return running; } }
         public DateTime LastBeepLocal { get { lock (gate) return lastBeepLocal; } }
+        public DateTime RunningSince { get { lock (gate) return runningSince; } }
         public int BeepCount { get { lock (gate) return beepCount; } }
+        public float LastBeepGain { get { lock (gate) return lastBeepGain; } }
+        public string Problem { get { lock (gate) return problem ?? ""; } }
 
         public void RequestBeep() { Interlocked.Exchange(ref beepRequested, 1); }
         public void RequestRestart() { Interlocked.Exchange(ref restartRequested, 1); }
@@ -362,7 +540,16 @@ namespace BeepTone
             thread.Start();
         }
 
-        void SetStatus(string text) { lock (gate) status = text; }
+        void SetStatus(string text)
+        {
+            lock (gate)
+            {
+                status = text;
+                if (text == "Running") runningSince = DateTime.Now;
+            }
+        }
+
+        void SetProblem(string text) { lock (gate) problem = text; }
 
         void SetBalloon(string title, string text)
         {
@@ -399,11 +586,8 @@ namespace BeepTone
                     lock (gate) running = false;
                     BeepFiles.Log("audio interrupted: " + ex.Message);
                     SetStatus("Reconnecting");
-                    if (!sawFailure)
-                    {
-                        sawFailure = true;
-                        SetBalloon("Beep tone", "Microphone or virtual cable was lost. Reconnecting.");
-                    }
+                    SetProblem("The beep is not going out on the call. " + ex.Message);
+                    if (!sawFailure) sawFailure = true;
                     for (int i = 0; i < 4 && Interlocked.CompareExchange(ref stopRequested, 0, 0) == 0; i++)
                     {
                         Thread.Sleep(500);
@@ -447,7 +631,6 @@ namespace BeepTone
                 if (sawFailure)
                 {
                     sawFailure = false;
-                    SetBalloon("Beep tone", "Beep tone recovered.");
                     BeepFiles.Log("audio recovered");
                 }
                 SetStatus("Running");
@@ -470,13 +653,16 @@ namespace BeepTone
             return Interlocked.Exchange(ref beepRequested, 0) == 1;
         }
 
-        internal void NoteBeep(double speechDb, double toneDb)
+        internal void NoteBeep(double speechDb, double toneDb, float gain)
         {
             lock (gate)
             {
                 lastBeepLocal = DateTime.Now;
                 beepCount++;
+                lastBeepGain = gain;
+                problem = null;
             }
+            BeepFiles.LastBeepUtc = DateTime.UtcNow;
             BeepFiles.Log("beep speech=" + speechDb.ToString("0.0", CultureInfo.InvariantCulture)
                 + " dBFS tone=" + toneDb.ToString("0.0", CultureInfo.InvariantCulture) + " dBFS");
         }
@@ -762,7 +948,7 @@ namespace BeepTone
                         double speechDb = levels.CurrentSpeechDb();
                         double toneRms = beepGain / Math.Sqrt(2.0);
                         double toneDb = 20.0 * Math.Log10(toneRms <= 0 ? 0.00001 : toneRms);
-                        mixer.NoteBeep(speechDb, toneDb);
+                        mixer.NoteBeep(speechDb, toneDb, beepGain);
                     }
 
                     float sample = voice;
@@ -1499,7 +1685,11 @@ function Read-Heartbeat {
         $parts = $text.Split(' ')
         if ($parts.Count -lt 2) { return $null }
         $when = [DateTime]::Parse($parts[0], [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-        return [pscustomobject]@{ Timestamp = $when; ProcessId = [int]$parts[1] }
+        $lastBeep = $null
+        if ($parts.Count -ge 3 -and $parts[2] -ne '-') {
+            $lastBeep = [DateTime]::Parse($parts[2], [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        }
+        return [pscustomobject]@{ Timestamp = $when; ProcessId = [int]$parts[1]; LastBeep = $lastBeep }
     } catch {
         return $null
     }
@@ -1536,7 +1726,26 @@ function Invoke-Watchdog {
         $ageSeconds = ([DateTime]::UtcNow - $heartbeat.Timestamp).TotalSeconds
         $proc = Get-MixerProcessById -ProcessId $heartbeat.ProcessId
     }
-    if ($proc -and $ageSeconds -lt 90) { exit 0 }
+    $restartForBeep = $false
+    if ($proc -and $ageSeconds -lt 90) {
+        $started = Get-ProcessAgeSeconds $proc.CreationDate
+        if ($started -ge 90) {
+            $config = Read-BeepConfig
+            $limit = [Math]::Max(30, [int]$config.intervalSeconds * 2)
+            $beepLate = $false
+            if ($null -eq $heartbeat.LastBeep) {
+                $beepLate = $true
+            } else {
+                $beepAge = ([DateTime]::UtcNow - $heartbeat.LastBeep).TotalSeconds
+                if ($beepAge -gt $limit) { $beepLate = $true }
+            }
+            if ($beepLate) {
+                $restartForBeep = $true
+                Write-BeepLog 'watchdog restarting because no beep has been sent'
+            }
+        }
+        if (-not $restartForBeep) { exit 0 }
+    }
 
     if (-not $proc) {
         $running = @(Get-BeepMixerProcesses)
@@ -1553,7 +1762,7 @@ function Invoke-Watchdog {
         }
     }
 
-    if ($proc -and -not ($ageSeconds -lt 90)) {
+    if ($proc -and ($restartForBeep -or -not ($ageSeconds -lt 90))) {
         Write-BeepLog "watchdog stopping hung mixer pid $($proc.ProcessId)"
         try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
         $deadline = (Get-Date).AddSeconds(5)
@@ -1865,7 +2074,7 @@ function Show-BeepSetup {
         $Config.maxBeepPeak = [math]::Round($capped, 5)
         Save-BeepConfig -Config $Config
         if ($Config.setCommunicationsDevice) {
-            Set-CableDefaultMicrophone
+            Update-CableDefaultMicrophone -Notify
         }
         try {
             Register-BeepTasks
@@ -1982,6 +2191,60 @@ function Play-LocalTestBeep {
     }
 }
 
+function Get-BeepAlert {
+    param($Mixer)
+    if (-not $Mixer) {
+        if ($script:MixerStarted) { return 'The beep is not running.' }
+        return $null
+    }
+    $problem = $Mixer.Problem
+    if ($problem) { return $problem }
+    $status = $Mixer.Status
+    if ($status -eq 'Reconnecting') {
+        return 'The microphone or virtual cable was lost. The beep is not going out on the call.'
+    }
+    if ($status -ne 'Running') { return $null }
+    $interval = 13
+    if ($Mixer.Settings -and [int]$Mixer.Settings.IntervalSeconds -ge 1) {
+        $interval = [int]$Mixer.Settings.IntervalSeconds
+    }
+    $limit = $interval + 5
+    $last = $Mixer.LastBeepLocal
+    if ($last -gt [datetime]::MinValue) {
+        $age = ((Get-Date) - $last).TotalSeconds
+        if ($age -gt $limit) {
+            return "No beep has been sent for $([int]$age) seconds. The recording may not include the beep."
+        }
+        return $null
+    }
+    $since = $Mixer.RunningSince
+    if ($since -gt [datetime]::MinValue -and ((Get-Date) - $since).TotalSeconds -gt $limit) {
+        return 'No beep has been sent since the mixer started. The recording may not include the beep.'
+    }
+    return $null
+}
+
+function Update-BeepAlert {
+    param($Notify, $Mixer)
+    $alert = Get-BeepAlert $Mixer
+    if ($alert) {
+        $repeat = ((Get-Date) - $script:AlertShownAt).TotalSeconds -ge 120
+        if ($script:AlertText -ne $alert -or $repeat) {
+            if ($script:AlertText -ne $alert) { Write-BeepLog "beep problem: $alert" }
+            $Notify.ShowBalloonTip(8000, 'Beep tone', $alert, [System.Windows.Forms.ToolTipIcon]::Warning)
+            $script:AlertText = $alert
+            $script:AlertShownAt = Get-Date
+        }
+        return $true
+    }
+    if ($script:AlertText) {
+        Write-BeepLog 'beep problem cleared'
+        $Notify.ShowBalloonTip(4000, 'Beep tone', 'The beep is going out on the call again.', [System.Windows.Forms.ToolTipIcon]::Info)
+        $script:AlertText = $null
+    }
+    return $false
+}
+
 function Update-BeepTray {
     param($Icon, $StatusItem)
     $mixer = [BeepTone.BeepMixer]::Current
@@ -2018,25 +2281,49 @@ function Update-BeepTray {
     $StatusItem.Text = $menu
 }
 
-function Set-CableDefaultMicrophone {
-    param([switch]$Quiet)
+function Test-RemoteDesktopSession {
+    return [System.Windows.Forms.SystemInformation]::TerminalServerSession
+}
+
+function Update-CableDefaultMicrophone {
+    param([switch]$Notify)
+    if (Test-RemoteDesktopSession) {
+        if (-not $script:LoggedRemoteSkip) {
+            $script:LoggedRemoteSkip = $true
+            $message = 'Remote Desktop is connected, so the Windows default microphone was left unchanged.'
+            Write-BeepLog $message
+            if ($Notify) {
+                [System.Windows.Forms.MessageBox]::Show($message, 'Beep Tone') | Out-Null
+            }
+        }
+        return
+    }
+    $script:LoggedRemoteSkip = $false
     try {
         $cableOut = [BeepTone.AudioDevices]::FindCableOutput()
         if (-not $cableOut) {
-            $message = 'CABLE Output was not found, so the default microphone was not changed.'
-            Write-BeepLog $message
-            if (-not $Quiet) {
-                [System.Windows.Forms.MessageBox]::Show(
-                    "$message Choose it in the softphone, or set the microphone to Follow system setting after the cable is installed.",
-                    'Beep Tone') | Out-Null
+            if ($Notify -or -not $script:LoggedMissingCable) {
+                $script:LoggedMissingCable = $true
+                $message = 'CABLE Output was not found, so the default microphone was not changed.'
+                Write-BeepLog $message
+                if ($Notify) {
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "$message Choose it in the softphone, or set the microphone to Follow system setting after the cable is installed.",
+                        'Beep Tone') | Out-Null
+                }
             }
             return
         }
+        $script:LoggedMissingCable = $false
+        $current = [BeepTone.AudioDevices]::GetDefaultEndpoint('Capture', 0)
+        if ($current -and $current.Id -eq $cableOut.Id) { return }
+        $was = 'none'
+        if ($current -and $current.Name) { $was = $current.Name }
         [BeepTone.AudioDevices]::SetDefaultMicrophone($cableOut.Id)
-        Write-BeepLog "default microphone set to $($cableOut.Name)"
+        Write-BeepLog "default microphone was $was, set back to $($cableOut.Name)"
     } catch {
         Write-BeepLog "could not set default microphone: $($_.Exception.Message)"
-        if (-not $Quiet) {
+        if ($Notify) {
             [System.Windows.Forms.MessageBox]::Show(
                 "The default microphone was not changed. In the softphone, choose CABLE Output or Follow system setting.`r`n$($_.Exception.Message)",
                 'Beep Tone') | Out-Null
@@ -2049,7 +2336,7 @@ function Start-MixerIfConfigured {
     if ([string]::IsNullOrWhiteSpace($config.captureDeviceName)) { return }
     if ([string]::IsNullOrWhiteSpace($config.renderDeviceName)) { return }
     if ($config.setCommunicationsDevice) {
-        Set-CableDefaultMicrophone -Quiet
+        Update-CableDefaultMicrophone
     }
     if (-not $script:MixerStarted) {
         $mixer = New-Object BeepTone.BeepMixer
@@ -2087,6 +2374,7 @@ function Start-TrayApp {
     Initialize-BeepDataDir
     $script:IdleIcon = New-BeepIcon ([System.Drawing.Color]::FromArgb(255, 25, 110, 200))
     $script:BeepIcon = New-BeepIcon ([System.Drawing.Color]::FromArgb(255, 214, 132, 16))
+    $script:WarningIcon = New-BeepIcon ([System.Drawing.Color]::FromArgb(255, 190, 40, 40))
     $script:SeenBeepCount = 0
     $script:IconFlashUntil = [datetime]::MinValue
     $notify = New-Object System.Windows.Forms.NotifyIcon
@@ -2143,15 +2431,24 @@ function Start-TrayApp {
     $timer.Add_Tick({
         $script:TrayTicks++
         $mixer = [BeepTone.BeepMixer]::Current
+        $alertNow = Get-BeepAlert $mixer
         if ($mixer) {
             $count = $mixer.BeepCount
             if ($count -ne $script:SeenBeepCount) {
                 $script:SeenBeepCount = $count
-                if ($count -gt 0) { $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700) }
+                if ($count -gt 0) {
+                    $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700)
+                    $gain = $mixer.LastBeepGain
+                    if ($gain -lt 0.001) { $gain = 0.001 }
+                    $settings = $mixer.Settings
+                    [BeepTone.AudioDevices]::PlayMonitorAsync([double]$settings.FrequencyHz, [int]$settings.DurationMs, [int]$settings.RampMs, [single]$gain)
+                }
             }
         }
         if ([datetime]::Now -lt $script:IconFlashUntil) {
             if ($notify.Icon -ne $script:BeepIcon) { $notify.Icon = $script:BeepIcon }
+        } elseif ($alertNow) {
+            if ($notify.Icon -ne $script:WarningIcon) { $notify.Icon = $script:WarningIcon }
         } elseif ($notify.Icon -ne $script:IdleIcon) {
             $notify.Icon = $script:IdleIcon
         }
@@ -2165,6 +2462,17 @@ function Start-TrayApp {
             [BeepTone.BeepFiles]::Heartbeat()
         }
         Update-BeepTray -Icon $notify -StatusItem $statusItem
+        if ($alertNow) {
+            $tip = [string]$alertNow
+            if ($tip.Length -gt 63) { $tip = $tip.Substring(0, 63) }
+            $notify.Text = $tip
+        }
+        Update-BeepAlert -Notify $notify -Mixer $mixer
+        if (((Get-Date) - $script:DefaultMicCheckedAt).TotalSeconds -ge 15) {
+            $script:DefaultMicCheckedAt = Get-Date
+            $micConfig = Read-BeepConfig
+            if ($micConfig.setCommunicationsDevice) { Update-CableDefaultMicrophone }
+        }
     })
     $timer.Start()
 

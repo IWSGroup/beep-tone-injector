@@ -34,7 +34,7 @@ The console closes and a setup window opens.
 4. Choose the physical microphone. The cable's own recording device is hidden so the mix cannot loop.
 5. Set the tone frequency, length, spacing, fade, and level.
 6. Leave **Set CABLE Output as the Windows default microphone** checked. That sets the normal Windows input, the multimedia input, and the communications input to CABLE Output.
-7. Save. This also registers the tasks that start the app at sign-in and bring it back if it stops. Each time the mixer starts, it sets that default again.
+7. Save. This also registers the tasks that start the app at sign-in and bring it back if it stops. The mixer sets that default when it starts and again about every 15 seconds. It leaves the default alone during a Remote Desktop session, because that session does not see the machine's own microphone.
 
 In the softphone, set the microphone to **CABLE Output (VB-Audio Virtual Cable)**, or to **Follow system setting**. Follow system setting uses the Windows default input, which is CABLE Output when the checkbox above is on. Do not select the physical microphone there.
 
@@ -50,15 +50,17 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 ## Tray
 
-The icon has no Quit. It turns amber for a moment each time a beep is sent. The menu is status, **Beep now**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**.
+The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**.
 
-**Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's default speakers or headset so the level can be checked, and does not send it into the call. **Open readme** opens `README.md` from the same folder as `BeepTone.ps1`.
+Each beep is also played at the same level through the headset or speakers, so the agent can hear that it happened. That copy is not sent into the cable. If the Windows default playback device is the cable, the copy goes to a headset or speakers instead.
+
+**Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call. **Open readme** opens `README.md` from the same folder as `BeepTone.ps1`.
 
 Muting the microphone in the softphone, in Windows, or on the headset also mutes this beep, because the beep is part of that microphone signal.
 
 ## Keeping it running
 
-The mixer restarts itself if the microphone or cable drops. It writes a heartbeat every second. A per-user task starts it at sign-in. Another task checks about once a minute and starts it again if the process is gone or the heartbeat is older than 90 seconds.
+The mixer restarts itself if the microphone or cable drops. It writes a heartbeat every second, including the time of the last beep. A per-user task starts it at sign-in. Another task checks about once a minute and starts it again if the process is gone, the heartbeat is older than 90 seconds, or the process has been up for at least 90 seconds without a beep for about two intervals.
 
 An administrator can force it to stay stopped:
 
