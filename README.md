@@ -33,10 +33,10 @@ The console closes and a setup window opens.
 3. Click **Install Virtual Cable**. That downloads [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and runs its installer. Windows asks for an administrator password on a standard user account. If that prompt is cancelled, the cable is not installed. If the cable does not appear after install, sign out or reboot and start the app again.
 4. Choose the physical microphone. The cable's own recording device is hidden so the mix cannot loop.
 5. Set the tone frequency, length, spacing, fade, and level.
-6. Leave **Set CABLE Output as the default communications microphone** checked if the softphone follows the Windows communications device.
-7. Save. This also registers the tasks that start the app at sign-in and bring it back if it stops.
+6. Leave **Set CABLE Output as the Windows default microphone** checked. That sets the normal Windows input, the multimedia input, and the communications input to CABLE Output.
+7. Save. This also registers the tasks that start the app at sign-in and bring it back if it stops. Each time the mixer starts, it sets that default again.
 
-In the softphone, set the microphone to **CABLE Output (VB-Audio Virtual Cable)**. Do not also select the physical microphone there.
+In the softphone, set the microphone to **CABLE Output (VB-Audio Virtual Cable)**, or to **Follow system setting**. Follow system setting uses the Windows default input, which is CABLE Output when the checkbox above is on. Do not select the physical microphone there.
 
 Headphones avoid the speaker feeding back into the microphone. The mixer adds about 20 ms of delay.
 

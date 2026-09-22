@@ -268,11 +268,15 @@ namespace BeepTone
             return null;
         }
 
-        public static void SetCommunicationsMicrophone(string deviceId)
+        public static void SetDefaultMicrophone(string deviceId)
         {
             var policy = (IPolicyConfig)new PolicyConfigClient();
-            int hr = policy.SetDefaultEndpoint(deviceId, 2);
-            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            int[] roles = new int[] { 0, 1, 2 };
+            for (int i = 0; i < roles.Length; i++)
+            {
+                int hr = policy.SetDefaultEndpoint(deviceId, roles[i]);
+                if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            }
         }
 
         static AudioEndpoint ReadEndpoint(IMMDevice device, string flow)
@@ -1680,7 +1684,7 @@ function Show-BeepSetup {
     $form.Controls.Add($outBox)
 
     $commCheck = New-Object System.Windows.Forms.CheckBox
-    $commCheck.Text = 'Set CABLE Output as the default communications microphone'
+    $commCheck.Text = 'Set CABLE Output as the Windows default microphone'
     $commCheck.Location = New-Object System.Drawing.Point(16, 180)
     $commCheck.Size = New-Object System.Drawing.Size(488, 24)
     $commCheck.Checked = [bool]$Config.setCommunicationsDevice
@@ -1753,7 +1757,7 @@ function Show-BeepSetup {
     $help.BackColor = $form.BackColor
     $help.Location = New-Object System.Drawing.Point(16, 364)
     $help.Size = New-Object System.Drawing.Size(528, 188)
-    $help.Text = "In the softphone, set the microphone to CABLE Output (VB-Audio Virtual Cable). This app opens the physical microphone. The softphone must not use that same device.`r`n`r`nTurn off microphone processing in the phone software. Noise removal, noise suppression, and automatic volume treat the beep as noise and make it louder, quieter, or drop it out as other call audio changes. In Webex, set Settings, Audio, Smart audio, Microphone audio to Music mode, and turn off automatic microphone volume. Other softphones need that same kind of processing turned off.`r`n`r`nMuting that mic in the softphone, Windows, or the headset also mutes this beep. Headphones avoid speaker-to-mic echo. The mixer adds about 20 ms.`r`n`r`nClose this window to finish later from the tray icon. There is no Quit on the tray."
+    $help.Text = "In the softphone, set the microphone to CABLE Output (VB-Audio Virtual Cable), or to Follow system setting. The checkbox above makes CABLE Output the Windows default input, which is what Follow system setting uses. This app opens the physical microphone. The softphone must not use that same device.`r`n`r`nTurn off microphone processing in the phone software. Noise removal, noise suppression, and automatic volume treat the beep as noise and make it louder, quieter, or drop it out as other call audio changes. In Webex, set Settings, Audio, Smart audio, Microphone audio to Music mode, and turn off automatic microphone volume. Other softphones need that same kind of processing turned off.`r`n`r`nMuting that mic in the softphone, Windows, or the headset also mutes this beep. Headphones avoid speaker-to-mic echo. The mixer adds about 20 ms.`r`n`r`nClose this window to finish later from the tray icon. There is no Quit on the tray."
     $form.Controls.Add($help)
 
     $saveButton = New-Object System.Windows.Forms.Button
@@ -1861,22 +1865,7 @@ function Show-BeepSetup {
         $Config.maxBeepPeak = [math]::Round($capped, 5)
         Save-BeepConfig -Config $Config
         if ($Config.setCommunicationsDevice) {
-            try {
-                $cableOut = [BeepTone.AudioDevices]::FindCableOutput()
-                if ($cableOut) {
-                    [BeepTone.AudioDevices]::SetCommunicationsMicrophone($cableOut.Id)
-                    Write-BeepLog "communications microphone set to $($cableOut.Name)"
-                } else {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        'CABLE Output was not found, so the communications microphone was not changed. Choose it in the softphone.',
-                        'Beep Tone') | Out-Null
-                }
-            } catch {
-                Write-BeepLog "could not set communications microphone: $($_.Exception.Message)"
-                [System.Windows.Forms.MessageBox]::Show(
-                    "The communications microphone was not changed. Choose CABLE Output in the softphone.`r`n$($_.Exception.Message)",
-                    'Beep Tone') | Out-Null
-            }
+            Set-CableDefaultMicrophone
         }
         try {
             Register-BeepTasks
@@ -2029,10 +2018,39 @@ function Update-BeepTray {
     $StatusItem.Text = $menu
 }
 
+function Set-CableDefaultMicrophone {
+    param([switch]$Quiet)
+    try {
+        $cableOut = [BeepTone.AudioDevices]::FindCableOutput()
+        if (-not $cableOut) {
+            $message = 'CABLE Output was not found, so the default microphone was not changed.'
+            Write-BeepLog $message
+            if (-not $Quiet) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "$message Choose it in the softphone, or set the microphone to Follow system setting after the cable is installed.",
+                    'Beep Tone') | Out-Null
+            }
+            return
+        }
+        [BeepTone.AudioDevices]::SetDefaultMicrophone($cableOut.Id)
+        Write-BeepLog "default microphone set to $($cableOut.Name)"
+    } catch {
+        Write-BeepLog "could not set default microphone: $($_.Exception.Message)"
+        if (-not $Quiet) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "The default microphone was not changed. In the softphone, choose CABLE Output or Follow system setting.`r`n$($_.Exception.Message)",
+                'Beep Tone') | Out-Null
+        }
+    }
+}
+
 function Start-MixerIfConfigured {
     $config = Read-BeepConfig
     if ([string]::IsNullOrWhiteSpace($config.captureDeviceName)) { return }
     if ([string]::IsNullOrWhiteSpace($config.renderDeviceName)) { return }
+    if ($config.setCommunicationsDevice) {
+        Set-CableDefaultMicrophone -Quiet
+    }
     if (-not $script:MixerStarted) {
         $mixer = New-Object BeepTone.BeepMixer
         $mixer.CaptureName = [string]$config.captureDeviceName
