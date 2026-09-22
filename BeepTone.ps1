@@ -633,7 +633,7 @@ namespace BeepTone
             double rms = hasSpeech ? Math.Max(smoothed, floor) : floor;
             double peak = rms * Math.Sqrt(2.0);
             if (MaxBeepPeak > 0 && peak > MaxBeepPeak) peak = MaxBeepPeak;
-            if (peak < 0.001) peak = 0.001;
+            if (peak < 1e-6) peak = 1e-6;
             if (peak > 1f) peak = 1f;
             return (float)peak;
         }
@@ -1930,11 +1930,11 @@ function Show-BeepSetup {
     $levelLabel.Size = New-Object System.Drawing.Size(120, 18)
     $form.Controls.Add($levelLabel)
 
-    $levelBox = New-SetupNumber -Min -48 -Max -3 -Value $Config.minBeepDbfs -Increment 1 -Decimals 0 -X 16 -Y 330 -Width 120
+    $levelBox = New-SetupNumber -Min -90 -Max -3 -Value $Config.minBeepDbfs -Increment 1 -Decimals 0 -X 16 -Y 330 -Width 120
     $form.Controls.Add($levelBox)
 
     $levelHint = New-Object System.Windows.Forms.Label
-    $levelHint.Text = 'Closer to 0 is louder. This level stays fixed.'
+    $levelHint.Text = 'Closer to 0 is louder. Range is -90 to -3.'
     $levelHint.Location = New-Object System.Drawing.Point(148, 332)
     $levelHint.Size = New-Object System.Drawing.Size(390, 20)
     $form.Controls.Add($levelHint)
@@ -2047,11 +2047,11 @@ function Show-BeepSetup {
         $level = [double]$levelBox.Value
         $Config.minBeepDbfs = $level
         $peak = [math]::Pow(10.0, $level / 20.0) * [math]::Sqrt(2.0)
-        if ($peak -lt 0.001) { $peak = 0.001 }
+        if ($peak -lt 1e-6) { $peak = 1e-6 }
         if ($peak -gt 1) { $peak = 1 }
         $capped = $peak * 1.001
         if ($capped -gt 1) { $capped = 1 }
-        $Config.maxBeepPeak = [math]::Round($capped, 5)
+        $Config.maxBeepPeak = [math]::Round($capped, 8)
         Save-BeepConfig -Config $Config
         if ($Config.setCommunicationsDevice) {
             Update-CableDefaultMicrophone -Notify
@@ -2119,7 +2119,7 @@ function Get-LocalBeepWav {
     $cap = [double]$Config.maxBeepPeak
     if ($cap -gt 0 -and $peak -gt $cap) { $peak = $cap }
     if ($peak -gt 1) { $peak = 1 }
-    if ($peak -lt 0.001) { $peak = 0.001 }
+    if ($peak -lt 1e-6) { $peak = 1e-6 }
     $dataBytes = $samples.Length * 2
     $stream = New-Object System.IO.MemoryStream
     $writer = New-Object System.IO.BinaryWriter $stream

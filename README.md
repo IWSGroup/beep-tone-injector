@@ -11,7 +11,7 @@ Setup saves these in `%LOCALAPPDATA%\BeepTone\config.json`. A new install starts
 - 1400 Hz, limited to 1260-1540
 - 200 ms long, limited to 170-250, with a 50 ms fade at each end so it eases in instead of popping
 - Repeats 13 seconds after the previous beep starts, limited to every 12-15 seconds
-- Level is the fixed dBFS value from setup. Closer to 0 is louder. It does not rise and fall with other audio on the call.
+- Level is the fixed dBFS value from setup, from -90 to -3. Closer to 0 is louder. It does not rise and fall with other audio on the call.
 
 The beep is timed from the audio clock, so it does not drift over a long shift. The first beep plays as soon as the mixer starts.
 
