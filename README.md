@@ -50,7 +50,9 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 ## Tray
 
-The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** asks for a password before any settings can be changed.
+The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out or is paused. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Pause beep for 15 minutes**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** asks for a password before any settings can be changed.
+
+**Pause beep for 15 minutes** stops only the tone. The microphone keeps working. The icon stays red and shows when the beep will return. After 15 minutes the beep turns itself back on. **Turn beep on** ends the pause sooner. No password is required.
 
 **Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call. **Open readme** opens `README.md` from the same folder as `BeepTone.ps1`.
 

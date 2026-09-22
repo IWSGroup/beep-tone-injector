@@ -33,6 +33,9 @@ $script:AlertText = $null
 $script:AlertShownAt = [datetime]::MinValue
 $script:DefaultMicCheckedAt = [datetime]::MinValue
 $script:SetupPassword = 'SuperSecretPassword!'
+$script:PausePath = Join-Path $script:DataDir 'pause-until.txt'
+$script:PauseMinutes = 15
+$script:SuppressAlertUntilBeep = $false
 
 $csharp = @'
 using System;
@@ -379,6 +382,11 @@ namespace BeepTone
         public DateTime RunningSince { get { lock (gate) return runningSince; } }
         public int BeepCount { get { lock (gate) return beepCount; } }
         public string Problem { get { lock (gate) return problem ?? ""; } }
+
+        int beepPaused;
+
+        public void SetBeepPaused(bool paused) { Interlocked.Exchange(ref beepPaused, paused ? 1 : 0); }
+        public bool IsBeepPaused { get { return Interlocked.CompareExchange(ref beepPaused, 0, 0) != 0; } }
 
         public void RequestBeep() { Interlocked.Exchange(ref beepRequested, 1); }
         public void RequestRestart() { Interlocked.Exchange(ref restartRequested, 1); }
@@ -804,7 +812,12 @@ namespace BeepTone
                     else last = voice;
 
                     bool force = mixer.ConsumeBeepRequest();
-                    if (force || (!inBeep && rendered >= nextBeep))
+                    if (mixer.IsBeepPaused)
+                    {
+                        if (inBeep) inBeep = false;
+                        if (rendered >= nextBeep) nextBeep = rendered + interval;
+                    }
+                    else if (force || (!inBeep && rendered >= nextBeep))
                     {
                         inBeep = true;
                         beepPos = 0;
@@ -1591,6 +1604,8 @@ function Invoke-Watchdog {
         $ageSeconds = ([DateTime]::UtcNow - $heartbeat.Timestamp).TotalSeconds
         $proc = Get-MixerProcessById -ProcessId $heartbeat.ProcessId
     }
+    if ($proc -and $ageSeconds -lt 90 -and (Test-BeepPauseActive)) { exit 0 }
+
     $restartForBeep = $false
     if ($proc -and $ageSeconds -lt 90) {
         $started = Get-ProcessAgeSeconds $proc.CreationDate
@@ -2114,8 +2129,50 @@ function Play-LocalTestBeep {
     }
 }
 
+function Get-BeepPauseUntil {
+    if (-not (Test-Path -LiteralPath $script:PausePath)) { return $null }
+    try {
+        $text = [IO.File]::ReadAllText($script:PausePath).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        return [DateTime]::Parse($text, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    } catch {
+        return $null
+    }
+}
+
+function Test-BeepPauseActive {
+    $until = Get-BeepPauseUntil
+    if (-not $until) { return $false }
+    return ([DateTime]::UtcNow -lt $until)
+}
+
+function Start-BeepPause {
+    Initialize-BeepDataDir
+    $until = [DateTime]::UtcNow.AddMinutes($script:PauseMinutes)
+    [IO.File]::WriteAllText($script:PausePath, $until.ToString('o', [Globalization.CultureInfo]::InvariantCulture))
+    $mixer = [BeepTone.BeepMixer]::Current
+    if ($mixer) { $mixer.SetBeepPaused($true) }
+    Write-BeepLog ("beep paused until " + $until.ToString('o', [Globalization.CultureInfo]::InvariantCulture))
+    return $until
+}
+
+function Stop-BeepPause {
+    if (Test-Path -LiteralPath $script:PausePath) {
+        Remove-Item -LiteralPath $script:PausePath -Force -ErrorAction SilentlyContinue
+    }
+    $mixer = [BeepTone.BeepMixer]::Current
+    if ($mixer) {
+        $mixer.SetBeepPaused($false)
+        $mixer.RequestBeep()
+    }
+    $script:SuppressAlertUntilBeep = $true
+    Write-BeepLog 'beep pause ended'
+}
+
 function Get-BeepAlert {
     param($Mixer)
+    if (Test-BeepPauseActive) { return $null }
+    if ($script:SuppressAlertUntilBeep) { return $null }
     if (-not $Mixer) {
         if ($script:MixerStarted) { return 'The beep is not running.' }
         return $null
@@ -2268,6 +2325,7 @@ function Start-MixerIfConfigured {
         $mixer.Settings = ConvertTo-BeepSettings -Config $config
         [BeepTone.BeepMixer]::Current = $mixer
         $mixer.Start()
+        $mixer.SetBeepPaused((Test-BeepPauseActive))
         $script:MixerStarted = $true
         Write-BeepLog 'mixer thread started'
         return
@@ -2310,12 +2368,14 @@ function Start-TrayApp {
     $statusItem = New-Object System.Windows.Forms.ToolStripMenuItem('Starting')
     $statusItem.Enabled = $false
     $beepItem = New-Object System.Windows.Forms.ToolStripMenuItem('Beep now')
+    $pauseItem = New-Object System.Windows.Forms.ToolStripMenuItem('Pause beep for 15 minutes')
     $hearItem = New-Object System.Windows.Forms.ToolStripMenuItem('Hear beep on this PC')
     $setupItem = New-Object System.Windows.Forms.ToolStripMenuItem('Setup')
     $readmeItem = New-Object System.Windows.Forms.ToolStripMenuItem('Open readme')
     $logItem = New-Object System.Windows.Forms.ToolStripMenuItem('Open log')
     [void]$menu.Items.Add($statusItem)
     [void]$menu.Items.Add($beepItem)
+    [void]$menu.Items.Add($pauseItem)
     [void]$menu.Items.Add($hearItem)
     [void]$menu.Items.Add($setupItem)
     [void]$menu.Items.Add($readmeItem)
@@ -2323,8 +2383,19 @@ function Start-TrayApp {
     $notify.ContextMenuStrip = $menu
 
     $beepItem.Add_Click({
+        if (Test-BeepPauseActive) { return }
         $mixer = [BeepTone.BeepMixer]::Current
         if ($mixer) { $mixer.RequestBeep() }
+    })
+    $pauseItem.Add_Click({
+        if (Test-BeepPauseActive) {
+            Stop-BeepPause
+            $notify.ShowBalloonTip(4000, 'Beep tone', 'The beep is back on.', [System.Windows.Forms.ToolTipIcon]::Info)
+            return
+        }
+        $until = Start-BeepPause
+        $local = $until.ToLocalTime().ToString('h:mm tt')
+        $notify.ShowBalloonTip(6000, 'Beep tone', "The beep is paused until $local. It turns back on by itself. The microphone still works.", [System.Windows.Forms.ToolTipIcon]::Warning)
     })
     $hearItem.Add_Click({
         Play-LocalTestBeep
@@ -2354,17 +2425,31 @@ function Start-TrayApp {
     $timer.Add_Tick({
         $script:TrayTicks++
         $mixer = [BeepTone.BeepMixer]::Current
+        $pauseUntil = Get-BeepPauseUntil
+        $paused = $false
+        if ($pauseUntil -and [DateTime]::UtcNow -ge $pauseUntil) {
+            Stop-BeepPause
+            $notify.ShowBalloonTip(6000, 'Beep tone', 'The beep is back on.', [System.Windows.Forms.ToolTipIcon]::Info)
+        } elseif ($pauseUntil) {
+            $paused = $true
+            if ($mixer) { $mixer.SetBeepPaused($true) }
+        } elseif ($mixer -and $mixer.IsBeepPaused) {
+            $mixer.SetBeepPaused($false)
+        }
         $alertNow = Get-BeepAlert $mixer
         if ($mixer) {
             $count = $mixer.BeepCount
             if ($count -ne $script:SeenBeepCount) {
                 $script:SeenBeepCount = $count
-                if ($count -gt 0) { $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700) }
+                if ($count -gt 0) {
+                    $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700)
+                    $script:SuppressAlertUntilBeep = $false
+                }
             }
         }
-        if ([datetime]::Now -lt $script:IconFlashUntil) {
+        if ([datetime]::Now -lt $script:IconFlashUntil -and -not $paused) {
             if ($notify.Icon -ne $script:BeepIcon) { $notify.Icon = $script:BeepIcon }
-        } elseif ($alertNow) {
+        } elseif ($paused -or $alertNow) {
             if ($notify.Icon -ne $script:WarningIcon) { $notify.Icon = $script:WarningIcon }
         } elseif ($notify.Icon -ne $script:IdleIcon) {
             $notify.Icon = $script:IdleIcon
@@ -2379,6 +2464,16 @@ function Start-TrayApp {
             [BeepTone.BeepFiles]::Heartbeat()
         }
         Update-BeepTray -Icon $notify -StatusItem $statusItem
+        if ($paused -and $pauseUntil) {
+            $pauseText = 'Beep paused until ' + $pauseUntil.ToLocalTime().ToString('h:mm tt')
+            if ($pauseText.Length -gt 63) { $pauseText = $pauseText.Substring(0, 63) }
+            $notify.Text = $pauseText
+            $statusItem.Text = $pauseText
+            $pauseItem.Text = 'Turn beep on'
+        } else {
+            $pauseItem.Text = 'Pause beep for 15 minutes'
+        }
+        if ($paused) { return }
         if ($alertNow) {
             $tip = [string]$alertNow
             if ($tip.Length -gt 63) { $tip = $tip.Substring(0, 63) }
