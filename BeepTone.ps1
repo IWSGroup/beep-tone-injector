@@ -273,6 +273,33 @@ namespace BeepTone
             return FindCaptureAllowed("CABLE Output");
         }
 
+        static bool IsCableCapture(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return name.IndexOf("CABLE Output", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("VB-Audio", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static AudioEndpoint FindWorkingCapture(string preferredName)
+        {
+            AudioEndpoint preferred = FindCapture(preferredName);
+            if (preferred != null) return preferred;
+            AudioEndpoint current = GetDefaultEndpoint("Capture", 0);
+            if (current != null && !IsCableCapture(current.Name)) return current;
+            AudioEndpoint[] all = List("Capture");
+            AudioEndpoint any = null;
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (IsCableCapture(all[i].Name)) continue;
+                string name = all[i].Name ?? "";
+                if (name.IndexOf("headset", StringComparison.OrdinalIgnoreCase) >= 0
+                    || name.IndexOf("headphone", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return all[i];
+                if (any == null) any = all[i];
+            }
+            return any;
+        }
+
         static AudioEndpoint FindCaptureAllowed(string namePart)
         {
             AudioEndpoint[] all = List("Capture");
@@ -492,10 +519,25 @@ namespace BeepTone
             string captureName = CaptureName;
             string renderName = RenderName;
             BeepSettings settings = Settings ?? new BeepSettings();
-            AudioEndpoint capture = AudioDevices.FindCapture(captureName);
+            AudioEndpoint capture = AudioDevices.FindWorkingCapture(captureName);
             if (capture == null) throw new InvalidOperationException("Microphone not found: " + captureName);
+            bool sameCapture = !string.IsNullOrEmpty(captureName)
+                && capture.Name.IndexOf(captureName, StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!sameCapture)
+            {
+                BeepFiles.Log("microphone was '" + captureName + "', now '" + capture.Name + "'");
+                CaptureName = capture.Name;
+                SetBalloon("Beep tone", "Microphone changed to " + capture.Name + ".");
+            }
             AudioEndpoint render = AudioDevices.FindRender(renderName);
+            if (render == null) render = AudioDevices.FindRender("CABLE Input");
             if (render == null) throw new InvalidOperationException("Playback device not found: " + renderName);
+            if (!string.IsNullOrEmpty(render.Name) && render.Name != RenderName
+                && (string.IsNullOrEmpty(renderName) || render.Name.IndexOf(renderName, StringComparison.OrdinalIgnoreCase) < 0))
+            {
+                BeepFiles.Log("playback was '" + renderName + "', now '" + render.Name + "'");
+                RenderName = render.Name;
+            }
 
             BeepFiles.Log("opening capture '" + capture.Name + "' and playback '" + render.Name + "'");
             using (var session = new MixSession(capture.Id, render.Id, settings))
@@ -2311,6 +2353,25 @@ function Update-CableDefaultMicrophone {
     }
 }
 
+function Sync-MixerDeviceNames {
+    $mixer = [BeepTone.BeepMixer]::Current
+    if (-not $mixer -or -not $mixer.IsRunning) { return }
+    $capture = [string]$mixer.CaptureName
+    $render = [string]$mixer.RenderName
+    if ([string]::IsNullOrWhiteSpace($capture) -or [string]::IsNullOrWhiteSpace($render)) { return }
+    $config = Read-BeepConfig
+    $changed = $false
+    if ($config.captureDeviceName -ne $capture) {
+        $config.captureDeviceName = $capture
+        $changed = $true
+    }
+    if ($config.renderDeviceName -ne $render) {
+        $config.renderDeviceName = $render
+        $changed = $true
+    }
+    if ($changed) { Save-BeepConfig -Config $config }
+}
+
 function Start-MixerIfConfigured {
     $config = Read-BeepConfig
     if ([string]::IsNullOrWhiteSpace($config.captureDeviceName)) { return }
@@ -2473,6 +2534,7 @@ function Start-TrayApp {
         } else {
             $pauseItem.Text = 'Pause beep for 15 minutes'
         }
+        Sync-MixerDeviceNames
         if ($paused) { return }
         if ($alertNow) {
             $tip = [string]$alertNow

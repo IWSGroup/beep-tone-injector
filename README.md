@@ -60,7 +60,7 @@ Muting the microphone in the softphone, in Windows, or on the headset also mutes
 
 ## Keeping it running
 
-The mixer restarts itself if the microphone or cable drops. It writes a heartbeat every second, including the time of the last beep. A per-user task starts it at sign-in. Another task checks about once a minute and starts it again if the process is gone, the heartbeat is older than 90 seconds, or the process has been up for at least 90 seconds without a beep for about two intervals.
+The mixer restarts itself if the microphone or cable drops. If the saved microphone is gone, it uses the Windows default microphone, then any other connected headset, and remembers that choice. It does not switch to the virtual cable's own recording device. It writes a heartbeat every second, including the time of the last beep. A per-user task starts it at sign-in. Another task checks about once a minute and starts it again if the process is gone, the heartbeat is older than 90 seconds, or the process has been up for at least 90 seconds without a beep for about two intervals.
 
 An administrator can force it to stay stopped:
 
