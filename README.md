@@ -28,7 +28,7 @@ Agents do not need to be local administrators for a normal shift.
 powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1"
 ```
 
-The console closes and a setup window opens.
+The console closes and a setup window opens after the setup password is entered.
 
 3. Click **Install Virtual Cable**. That downloads [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and runs its installer. Windows asks for an administrator password on a standard user account. If that prompt is cancelled, the cable is not installed. If the cable does not appear after install, sign out or reboot and start the app again.
 4. Choose the physical microphone. The cable's own recording device is hidden so the mix cannot loop.
@@ -50,9 +50,7 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 ## Tray
 
-The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**.
-
-Each beep is also played at the same level through the headset or speakers, so the agent can hear that it happened. That copy is not sent into the cable. If the Windows default playback device is the cable, the copy goes to a headset or speakers instead.
+The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** asks for a password before any settings can be changed.
 
 **Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call. **Open readme** opens `README.md` from the same folder as `BeepTone.ps1`.
 

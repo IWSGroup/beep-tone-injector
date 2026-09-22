@@ -32,6 +32,7 @@ $script:LoggedMissingCable = $false
 $script:AlertText = $null
 $script:AlertShownAt = [datetime]::MinValue
 $script:DefaultMicCheckedAt = [datetime]::MinValue
+$script:SetupPassword = 'SuperSecretPassword!'
 
 $csharp = @'
 using System;
@@ -290,8 +291,6 @@ namespace BeepTone
             }
         }
 
-        static int monitorBusy;
-
         public static AudioEndpoint GetDefaultEndpoint(string flow, int role)
         {
             WasapiNative.ComInit();
@@ -318,137 +317,6 @@ namespace BeepTone
                 finally { Marshal.Release(devicePtr); }
             }
             finally { if (enumeratorPtr != IntPtr.Zero) Marshal.Release(enumeratorPtr); }
-        }
-
-        static bool IsVirtualDevice(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return false;
-            return name.IndexOf("cable", StringComparison.OrdinalIgnoreCase) >= 0
-                || name.IndexOf("voicemeeter", StringComparison.OrdinalIgnoreCase) >= 0
-                || name.IndexOf("vb-audio", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        static AudioEndpoint FindMonitorRender()
-        {
-            AudioEndpoint current = GetDefaultEndpoint("Render", 0);
-            if (current != null && !IsVirtualDevice(current.Name)) return current;
-            AudioEndpoint[] all = List("Render");
-            AudioEndpoint fallback = null;
-            for (int i = 0; i < all.Length; i++)
-            {
-                if (IsVirtualDevice(all[i].Name)) continue;
-                if (fallback == null) fallback = all[i];
-                string name = all[i].Name ?? "";
-                if (name.IndexOf("head", StringComparison.OrdinalIgnoreCase) >= 0
-                    || name.IndexOf("speaker", StringComparison.OrdinalIgnoreCase) >= 0
-                    || name.IndexOf("ear", StringComparison.OrdinalIgnoreCase) >= 0)
-                    return all[i];
-            }
-            return fallback;
-        }
-
-        public static void PlayMonitorAsync(double frequencyHz, int durationMs, int rampMs, float gain)
-        {
-            if (Interlocked.CompareExchange(ref monitorBusy, 1, 0) != 0) return;
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                try
-                {
-                    WasapiNative.ComInit();
-                    AudioEndpoint device = FindMonitorRender();
-                    if (device == null) return;
-                    int rate = 48000;
-                    float[] tone = BeepSynth.Create(rate, frequencyHz, durationMs, rampMs);
-                    float level = gain;
-                    if (level < 0.001f) level = 0.001f;
-                    if (level > 1f) level = 1f;
-                    for (int i = 0; i < tone.Length; i++) tone[i] = tone[i] * level;
-                    PlayBuffer(device.Id, tone, rate);
-                }
-                catch (Exception ex)
-                {
-                    BeepFiles.Log("headset beep failed: " + ex.Message);
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref monitorBusy, 0);
-                }
-            });
-        }
-
-        static void PlayBuffer(string deviceId, float[] samples, int rate)
-        {
-            IMMDevice device = WasapiNative.OpenDevice(deviceId);
-            try
-            {
-                IAudioClient client = WasapiNative.ActivateClient(device);
-                try
-                {
-                    FormatInfo format = WasapiNative.InitializeRender(client, rate);
-                    uint buffer;
-                    int hr = client.GetBufferSize(out buffer);
-                    if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-                    IAudioRenderClient render = WasapiNative.GetRender(client);
-                    try
-                    {
-                        hr = client.Start();
-                        if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-                        int offset = 0;
-                        while (offset < samples.Length)
-                        {
-                            uint padding;
-                            hr = client.GetCurrentPadding(out padding);
-                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-                            int want = (int)buffer - (int)padding;
-                            if (want <= 0)
-                            {
-                                Thread.Sleep(5);
-                                continue;
-                            }
-                            int count = samples.Length - offset;
-                            if (count > want) count = want;
-                            IntPtr data;
-                            hr = render.GetBuffer(count, out data);
-                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-                            int channels = format.Channels < 1 ? 1 : format.Channels;
-                            if (format.IsFloat && format.Bits == 32)
-                            {
-                                for (int i = 0; i < count; i++)
-                                {
-                                    float sample = samples[offset + i];
-                                    for (int ch = 0; ch < channels; ch++)
-                                        Marshal.WriteInt32(data, (i * channels + ch) * 4, BitConverter.ToInt32(BitConverter.GetBytes(sample), 0));
-                                }
-                            }
-                            else
-                            {
-                                for (int i = 0; i < count; i++)
-                                {
-                                    float sample = samples[offset + i];
-                                    if (sample > 1f) sample = 1f;
-                                    if (sample < -1f) sample = -1f;
-                                    short pcm = (short)Math.Round(sample * 32767f);
-                                    for (int ch = 0; ch < channels; ch++)
-                                        Marshal.WriteInt16(data, (i * channels + ch) * 2, pcm);
-                                }
-                            }
-                            hr = render.ReleaseBuffer(count, 0);
-                            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
-                            offset += count;
-                        }
-                        for (int i = 0; i < 40; i++)
-                        {
-                            uint padding;
-                            if (client.GetCurrentPadding(out padding) < 0 || padding == 0) break;
-                            Thread.Sleep(10);
-                        }
-                        client.Stop();
-                    }
-                    finally { Marshal.ReleaseComObject(render); }
-                }
-                finally { Marshal.ReleaseComObject(client); }
-            }
-            finally { Marshal.ReleaseComObject(device); }
         }
 
         static AudioEndpoint ReadEndpoint(IMMDevice device, string flow)
@@ -501,7 +369,6 @@ namespace BeepTone
         DateTime lastBeepLocal = DateTime.MinValue;
         DateTime runningSince = DateTime.MinValue;
         int beepCount;
-        float lastBeepGain;
         string problem;
         bool sawFailure;
         bool running;
@@ -511,7 +378,6 @@ namespace BeepTone
         public DateTime LastBeepLocal { get { lock (gate) return lastBeepLocal; } }
         public DateTime RunningSince { get { lock (gate) return runningSince; } }
         public int BeepCount { get { lock (gate) return beepCount; } }
-        public float LastBeepGain { get { lock (gate) return lastBeepGain; } }
         public string Problem { get { lock (gate) return problem ?? ""; } }
 
         public void RequestBeep() { Interlocked.Exchange(ref beepRequested, 1); }
@@ -653,13 +519,12 @@ namespace BeepTone
             return Interlocked.Exchange(ref beepRequested, 0) == 1;
         }
 
-        internal void NoteBeep(double speechDb, double toneDb, float gain)
+        internal void NoteBeep(double speechDb, double toneDb)
         {
             lock (gate)
             {
                 lastBeepLocal = DateTime.Now;
                 beepCount++;
-                lastBeepGain = gain;
                 problem = null;
             }
             BeepFiles.LastBeepUtc = DateTime.UtcNow;
@@ -948,7 +813,7 @@ namespace BeepTone
                         double speechDb = levels.CurrentSpeechDb();
                         double toneRms = beepGain / Math.Sqrt(2.0);
                         double toneDb = 20.0 * Math.Log10(toneRms <= 0 ? 0.00001 : toneRms);
-                        mixer.NoteBeep(speechDb, toneDb, beepGain);
+                        mixer.NoteBeep(speechDb, toneDb);
                     }
 
                     float sample = voice;
@@ -1846,8 +1711,66 @@ function New-SetupNumber {
     return $box
 }
 
+function Test-SetupPassword {
+    $prompt = New-Object System.Windows.Forms.Form
+    $prompt.Text = 'Beep Tone setup'
+    $prompt.FormBorderStyle = 'FixedDialog'
+    $prompt.MaximizeBox = $false
+    $prompt.MinimizeBox = $false
+    $prompt.StartPosition = 'CenterScreen'
+    $prompt.ClientSize = New-Object System.Drawing.Size(360, 140)
+    $prompt.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = 'Enter the setup password.'
+    $label.Location = New-Object System.Drawing.Point(16, 16)
+    $label.Size = New-Object System.Drawing.Size(328, 20)
+    $prompt.Controls.Add($label)
+
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Location = New-Object System.Drawing.Point(16, 44)
+    $box.Size = New-Object System.Drawing.Size(328, 24)
+    $box.UseSystemPasswordChar = $true
+    $prompt.Controls.Add($box)
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'OK'
+    $ok.Location = New-Object System.Drawing.Point(168, 88)
+    $ok.Size = New-Object System.Drawing.Size(80, 28)
+    $prompt.Controls.Add($ok)
+
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'
+    $cancel.Location = New-Object System.Drawing.Point(256, 88)
+    $cancel.Size = New-Object System.Drawing.Size(88, 28)
+    $prompt.Controls.Add($cancel)
+
+    $script:setupPasswordOk = $false
+    $prompt.AcceptButton = $ok
+    $prompt.CancelButton = $cancel
+    $ok.Add_Click({
+        if ($box.Text -ceq $script:SetupPassword) {
+            $script:setupPasswordOk = $true
+            $prompt.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $prompt.Close()
+            return
+        }
+        [System.Windows.Forms.MessageBox]::Show('That password is not correct.', 'Beep Tone') | Out-Null
+        $box.Clear()
+        $box.Focus() | Out-Null
+    })
+    $cancel.Add_Click({
+        $prompt.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $prompt.Close()
+    })
+    [void]$prompt.ShowDialog()
+    $prompt.Dispose()
+    return [bool]$script:setupPasswordOk
+}
+
 function Show-BeepSetup {
     param($Config)
+    if (-not (Test-SetupPassword)) { return $false }
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'Beep Tone setup'
     $form.FormBorderStyle = 'FixedDialog'
@@ -2436,13 +2359,7 @@ function Start-TrayApp {
             $count = $mixer.BeepCount
             if ($count -ne $script:SeenBeepCount) {
                 $script:SeenBeepCount = $count
-                if ($count -gt 0) {
-                    $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700)
-                    $gain = $mixer.LastBeepGain
-                    if ($gain -lt 0.001) { $gain = 0.001 }
-                    $settings = $mixer.Settings
-                    [BeepTone.AudioDevices]::PlayMonitorAsync([double]$settings.FrequencyHz, [int]$settings.DurationMs, [int]$settings.RampMs, [single]$gain)
-                }
+                if ($count -gt 0) { $script:IconFlashUntil = [datetime]::Now.AddMilliseconds(700) }
             }
         }
         if ([datetime]::Now -lt $script:IconFlashUntil) {
