@@ -25,6 +25,8 @@ $script:WatchdogTaskName = 'BeepTone Watchdog'
 $script:CablePackUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip'
 $script:Mutex = $null
 $script:MixerStarted = $false
+$script:IconBitmaps = @()
+$script:LocalBeepPlayer = $null
 
 $csharp = @'
 using System;
@@ -1908,7 +1910,6 @@ function New-BeepIcon {
     $graphics.Dispose()
     $brush.Dispose()
     $font.Dispose()
-    if (-not $script:IconBitmaps) { $script:IconBitmaps = @() }
     $script:IconBitmaps += $bmp
     return [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
 }
@@ -2074,6 +2075,7 @@ function Start-TrayApp {
     $notify.Icon = $script:IdleIcon
     $notify.Visible = $true
     $notify.Text = 'Beep tone starting'
+    Write-BeepLog 'tray icon is showing'
 
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
     $statusItem = New-Object System.Windows.Forms.ToolStripMenuItem('Starting')
