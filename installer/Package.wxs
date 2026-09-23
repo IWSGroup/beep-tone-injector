@@ -18,6 +18,12 @@
     <MediaTemplate EmbedCab="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
+    <!-- Icon in Installed apps, and the wizard artwork. Made from assets/app-icon.png by assets/make_icons.py. -->
+    <Icon Id="BeepTone.ico" SourceFile="..\src\BeepTone.ico" />
+    <Property Id="ARPPRODUCTICON" Value="BeepTone.ico" />
+    <WixVariable Id="WixUIBannerBmp" Value="WixUIBanner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="WixUIDialog.bmp" />
+
     <!-- Policy values. Each one is written to HKLM\Software\Policies\BeepTone only when given. -->
     <Property Id="FREQUENCYHZ" Secure="yes" />
     <Property Id="DURATIONMS" Secure="yes" />

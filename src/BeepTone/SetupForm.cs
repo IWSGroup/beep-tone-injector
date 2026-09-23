@@ -88,6 +88,7 @@ namespace BeepTone
             this.config = config;
             this.updateDefaults = updateDefaults;
             Text = "Beep Tone " + BeepPaths.Version + " setup";
+            Icon = AppIcon.Get();
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;

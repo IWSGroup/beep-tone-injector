@@ -14,6 +14,7 @@ namespace BeepTone
         public PasswordForm(string prompt)
         {
             Text = "Beep Tone setup";
+            Icon = AppIcon.Get();
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;

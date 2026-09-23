@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-icon.png" width="180" alt="Beep Tone">
+</p>
+
 # Beep Tone Injector
 
 A Windows tray app that mixes a recording beep into the microphone and sends that mix to a virtual audio cable. The softphone uses the cable as its microphone, so the remote party and the recording hear the beep.
@@ -44,7 +48,14 @@ The PowerShell version made CABLE Output the Windows default microphone. If you 
 
 ## Install
 
-`BeepTone.msi` installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install. On the password page, type a new setup password twice, or leave both boxes empty to keep the current one (a first install then uses the built-in default). Only a one-way hash of the password is stored.
+`BeepTone.msi` installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install.
+
+<p align="center">
+  <img src="docs/images/installer-welcome.png" width="420" alt="Installer welcome page">
+  &nbsp;
+  <img src="docs/images/installer-password.png" width="420" alt="Installer setup password page">
+</p>
+ On the password page, type a new setup password twice, or leave both boxes empty to keep the current one (a first install then uses the built-in default). Only a one-way hash of the password is stored.
 
 To install without any prompts, for example from Intune or SCCM:
 
@@ -122,6 +133,10 @@ The MSI installs VB-Cable too when it is missing (see Install). To deploy VB-Cab
 
 After install, the beep starts at sign-in with no prompt. It picks the microphone automatically (a headset first). To choose a specific microphone or change the tone, right-click the tray icon and choose **Setup**. Anyone can open it and look; the setup password is asked for only when saving a change.
 
+<p align="center">
+  <img src="docs/images/setup.png" width="460" alt="Beep Tone setup window">
+</p>
+
 1. Choose the physical microphone. Virtual devices are not offered, so the mix cannot loop.
 2. Set the tone frequency, length, fade, and level with the sliders, or type an exact value in the box next to each one. Pick the spacing from the list. Settings set by policy are greyed out. **Hear it** plays the current settings on this PC only, before saving.
 3. Leave **Set CABLE Output as the Windows default microphone** checked. That sets the normal Windows input, the multimedia input, and the communications input to CABLE Output.
@@ -151,6 +166,10 @@ In Webex, set Settings, Audio, Smart audio, Microphone audio to **Music mode**. 
 Any other softphone needs the same thing. Turn off noise removal, noise suppression, and automatic gain on the microphone that receives the cable.
 
 ## Tray
+
+<p align="center">
+  <img src="docs/images/tray-menu.png" width="284" alt="Beep Tone tray menu">
+</p>
 
 The icon has no Quit. It turns amber for a moment each time a beep is sent, red while the beep is not going out or is paused, and grey while an administrator has the beep stopped. A red banner at the top of the screen says what is wrong. It does not take focus, can be hidden for 2 minutes, and appears even when Windows notifications are silenced. A notification also names the problem and repeats about every two minutes until the beep returns.
 
@@ -267,5 +286,7 @@ Needs the .NET SDK (6 or later) on Windows. The .NET Framework 4.8 targeting pac
 ```powershell
 .\build.ps1
 ```
+
+The program icon and installer artwork are made from `assets/app-icon.png`. After changing that image, run `python assets/make_icons.py` (needs Python with Pillow) and commit the files it writes. The tray keeps its coloured "B" icons, because their colour shows the beep's status.
 
 To release a new version, raise `Version` in `Directory.Build.props` first, so the MSI upgrades installed copies. The build makes `BeepTone.exe` and `BeepToneCtl.exe` for .NET Framework 4.8, which is part of Windows 10 and 11, then `dist\BeepTone.msi`, and runs the self-test. The source is in `src\Shared` (audio engine and settings), `src\BeepTone` (tray app), `src\BeepToneCtl` (service and commands) and `installer` (MSI).

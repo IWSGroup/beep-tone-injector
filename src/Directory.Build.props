@@ -11,6 +11,8 @@
     <DebugType>embedded</DebugType>
     <Deterministic>true</Deterministic>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Made from assets/app-icon.png by assets/make_icons.py. -->
+    <ApplicationIcon>$(MSBuildThisFileDirectory)BeepTone.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)Shared\*.cs" LinkBase="Shared" />

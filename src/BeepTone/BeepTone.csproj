@@ -8,5 +8,6 @@
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
+    <EmbeddedResource Include="..\BeepTone.ico" LogicalName="BeepTone.ico" />
   </ItemGroup>
 </Project>
