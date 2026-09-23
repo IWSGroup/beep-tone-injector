@@ -673,11 +673,17 @@ namespace BeepTone
 
         public static RecordingResult CheckFile(string path, double frequencyHz, double maxGapSeconds)
         {
+            return CheckFile(path, frequencyHz, maxGapSeconds, delegate (string p) { return new WavReader(p); });
+        }
+
+        // open lets callers add formats, such as MP3 through Media Foundation.
+        public static RecordingResult CheckFile(string path, double frequencyHz, double maxGapSeconds, Func<string, IFrameSource> open)
+        {
             var result = new RecordingResult();
             result.Path = path;
             try
             {
-                using (var reader = new WavReader(path))
+                using (IFrameSource reader = open(path))
                 {
                     int channels = reader.Channels;
                     var detectors = new ToneDetector[channels];
@@ -743,13 +749,21 @@ namespace BeepTone
         }
     }
 
+    // Decoded audio, one frame (one sample per channel) at a time.
+    public interface IFrameSource : IDisposable
+    {
+        int SampleRate { get; }
+        int Channels { get; }
+        bool ReadFrame(float[] frame);
+    }
+
     // Reads PCM 8/16/24/32-bit, IEEE float, A-law and mu-law WAV files, one frame at a time.
-    public sealed class WavReader : IDisposable
+    public sealed class WavReader : IFrameSource
     {
         readonly FileStream stream;
         readonly BinaryReader reader;
-        public readonly int SampleRate;
-        public readonly int Channels;
+        public int SampleRate { get; private set; }
+        public int Channels { get; private set; }
         readonly int bits;
         readonly int format;
         readonly int blockAlign;
@@ -1253,7 +1267,7 @@ namespace BeepTone
             }
         }
 
-        static void WriteTestRecording(string path, int rate, int seconds, int interval, int skipBeepAt, bool muLaw)
+        internal static void WriteTestRecording(string path, int rate, int seconds, int interval, int skipBeepAt, bool muLaw)
         {
             float[] voice = SpeechLike(rate, seconds, -18, 11);
             var settings = new BeepSettings();

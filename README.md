@@ -8,6 +8,8 @@ A Windows tray app that mixes a recording beep into the microphone and sends tha
 
 It does not record the call. It does not decide whether a beep is required.
 
+**[Download the latest release](https://github.com/IWSGroup/beep-tone-injector/releases/latest)** (`BeepTone.msi`)
+
 ## Check the phone system first
 
 If the phone system can play the tone itself, use that instead of this app, or keep this app only as a backup. Webex Calling has a **Recording Reminder Tone** in Control Hub (user, Calling, Call recording) that repeats every chosen number of seconds and can play to internal users, external callers, or both. Many recording platforms have the same option.
@@ -48,7 +50,7 @@ The PowerShell version made CABLE Output the Windows default microphone. If you 
 
 ## Install
 
-`BeepTone.msi` installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install.
+Download `BeepTone.msi` from the [latest release](https://github.com/IWSGroup/beep-tone-injector/releases/latest). It installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install.
 
 <p align="center">
   <img src="docs/images/installer-welcome.png" width="420" alt="Installer welcome page">
@@ -235,7 +237,7 @@ Values under `HKLM\Software\Policies\BeepTone` override setup and are greyed out
 & 'C:\Program Files\BeepTone\BeepToneCtl.exe' check-recordings 'D:\Recordings' --recurse --csv report.csv
 ```
 
-This reads each WAV file (PCM, float, mu-law or A-law, any channel count) and finds the beeps. A recording passes when no stretch is longer than `--max-gap` seconds (default 18) without a beep, counting from the start and to the end. A call shorter than that can pass with no beep. The frequency comes from the settings, or from `--frequency`. The exit code is 1 if any recording fails, so a nightly job can alert on it. Convert compressed recordings (MP3, M4A) to WAV first.
+This reads each WAV, MP3, M4A (AAC) or WMA recording, any sample rate or channel count, and finds the beeps. WAV files (PCM, float, mu-law or A-law) are read directly; the other formats use the decoders built into Windows, which Windows "N" editions get from the Media Feature Pack. A recording passes when no stretch is longer than `--max-gap` seconds (default 18) without a beep, counting from the start and to the end. A call shorter than that can pass with no beep. The frequency comes from the settings, or from `--frequency`. The exit code is 1 if any recording fails, so a nightly job can alert on it. A file that is not a readable recording is listed as ERROR, and the rest are still checked.
 
 ## Other commands
 

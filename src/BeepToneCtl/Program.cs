@@ -20,7 +20,8 @@ namespace BeepTone
   list-devices                   List microphones and playback devices.
   test-mix [--seconds N]         Run the mixer for N seconds (default 40) and check each beep reaches the cable.
   check-recordings <file|folder> [--recurse] [--max-gap S] [--frequency HZ] [--csv FILE]
-                                 Check WAV recordings for a beep at least every S seconds (default 18).
+                                 Check WAV, MP3, M4A or WMA recordings for a beep at least every S
+                                 seconds (default 18).
   stop                           Administrator: turn the beep off on this PC until 'start'.
   start                          Administrator: turn the beep back on.
   guard-check                    Show what the guard service would do for this session, without doing it.
@@ -148,6 +149,7 @@ namespace BeepTone
         {
             var lines = new List<string>(BeepSelfTest.RunAll());
             lines.AddRange(BeepConfigSelfTest.Run());
+            lines.Add(MediaFoundationSelfTest());
             foreach (string line in lines) Console.WriteLine(line);
             int failed = lines.Count(l => l.StartsWith("FAIL", StringComparison.Ordinal));
             if (failed > 0)
@@ -229,7 +231,8 @@ namespace BeepTone
             string csv = TextOption(args, "--csv");
             string[] files;
             if (Directory.Exists(path))
-                files = Directory.GetFiles(path, "*.wav", Flag(args, "--recurse") ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
+                files = Directory.GetFiles(path, "*.*", Flag(args, "--recurse") ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+                    .Where(RecordingFiles.IsRecording).ToArray();
             else if (File.Exists(path))
                 files = new[] { path };
             else
@@ -239,7 +242,7 @@ namespace BeepTone
             int failed = 0;
             foreach (string file in files.OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
             {
-                RecordingResult r = RecordingChecker.CheckFile(file, frequency, maxGap);
+                RecordingResult r = RecordingChecker.CheckFile(file, frequency, maxGap, RecordingFiles.Open);
                 string verdict = r.Error != null ? "ERROR" : (r.Pass ? "PASS" : "FAIL");
                 if (verdict != "PASS") failed++;
                 rows.Add(new[]
@@ -260,6 +263,34 @@ namespace BeepTone
             Console.WriteLine(rows.Count + " recording(s) checked at " + frequency.ToString(CultureInfo.InvariantCulture) + " Hz, longest allowed gap "
                 + maxGap.ToString(CultureInfo.InvariantCulture) + " s. " + failed + " did not pass.");
             return failed > 0 ? 1 : 0;
+        }
+
+        // Checks that Windows can decode recordings through Media Foundation, the path MP3, M4A and WMA
+        // files take, by reading a synthetic WAV both ways and comparing the results.
+        static string MediaFoundationSelfTest()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "BeepToneMfTest-" + Process.GetCurrentProcess().Id);
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string gap = Path.Combine(dir, "gap.wav");
+                BeepSelfTest.WriteTestRecording(gap, 16000, 70, 13, 26, false);
+                RecordingResult plain = RecordingChecker.CheckFile(gap, 1400, 18);
+                RecordingResult mf = RecordingChecker.CheckFile(gap, 1400, 18, delegate (string p) { return new MediaFoundationReader(p); });
+                if (mf.Error != null) return "FAIL media foundation decoding: " + mf.Error;
+                if (mf.BeepCount != plain.BeepCount || Math.Abs(mf.MaxGapSeconds - plain.MaxGapSeconds) > 0.1)
+                    return "FAIL media foundation decoding: " + mf.BeepCount + " beeps, gap " + Round(mf.MaxGapSeconds)
+                        + "; expected " + plain.BeepCount + ", " + Round(plain.MaxGapSeconds);
+                return "PASS media foundation decoding: Windows decodes recordings the same way, so MP3, M4A and WMA can be checked";
+            }
+            catch (Exception ex)
+            {
+                return "FAIL media foundation decoding: " + ex.Message;
+            }
+            finally
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
         }
 
         static string Round(double value)
