@@ -1,0 +1,18 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!-- Builds BeepTone.msi. Run ..\build.ps1, or: dotnet build installer\BeepTone.wixproj -c Release -->
+  <PropertyGroup>
+    <OutputName>BeepTone</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <ProductVersion>$(Version)</ProductVersion>
+    <DefineConstants>ProductVersion=$(ProductVersion)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\BeepTone\BeepTone.csproj" />
+    <ProjectReference Include="..\src\BeepToneCtl\BeepToneCtl.csproj" />
+    <ProjectReference Include="CustomActions\BeepToneSetup.csproj" />
+  </ItemGroup>
+</Project>

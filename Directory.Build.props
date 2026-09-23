@@ -1,0 +1,7 @@
+<Project>
+  <!-- One version for BeepTone.exe, BeepToneCtl.exe and BeepTone.msi. Raise it for every release,
+       so the MSI upgrades the installed copy. -->
+  <PropertyGroup>
+    <Version>2.0.3</Version>
+  </PropertyGroup>
+</Project>

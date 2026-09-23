@@ -1,0 +1,146 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <!--
+    Installs Beep Tone for every user on the PC:
+      - BeepTone.exe (tray app) and BeepToneCtl.exe (guard service and command-line tool) in Program Files
+      - the Beep Tone Guard service, which starts the tray app in every signed-in session
+      - the BeepTone event log source
+      - optional policy values from the command line, for example:
+          msiexec /i BeepTone.msi /qn LEVELDBFS=-30 ALLOWPAUSE=0
+    The wizard asks for a new setup password (optional). Silent installs can pass SETUPPASSWORD=... instead.
+    It also removes leftovers of the PowerShell version (scheduled tasks, running script, compiled files),
+    and warns in the install log and event log when an administrator stop is set.
+  -->
+  <Package Name="Beep Tone" Manufacturer="Beep Tone Injector" Version="$(ProductVersion)"
+           UpgradeCode="60C3DFEF-FAE6-4052-AFDF-3F8FF386FA2B" Scope="perMachine">
+    <SummaryInformation Description="Mixes a call recording beep into the microphone." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Beep Tone is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- Policy values. Each one is written to HKLM\Software\Policies\BeepTone only when given. -->
+    <Property Id="FREQUENCYHZ" Secure="yes" />
+    <Property Id="DURATIONMS" Secure="yes" />
+    <Property Id="INTERVALSECONDS" Secure="yes" />
+    <Property Id="RAMPMS" Secure="yes" />
+    <Property Id="LEVELDBFS" Secure="yes" />
+    <Property Id="SETDEFAULTMICROPHONE" Secure="yes" />
+    <Property Id="ALLOWPAUSE" Secure="yes" />
+    <Property Id="PAUSEMINUTES" Secure="yes" />
+    <Property Id="ALLOWSTOP" Secure="yes" />
+    <Property Id="IGNOREDMICAPPS" Secure="yes" />
+    <Property Id="SETUPPASSWORDHASH" Secure="yes" Hidden="yes" />
+
+    <!-- Setup password: typed in the wizard, or SETUPPASSWORD=... on the command line. It is turned
+         into SETUPPASSWORDHASH before costing, and only the hash is written. Left empty, an upgrade
+         keeps the hash already in the registry and a first install uses the built-in default. -->
+    <Property Id="SETUPPASSWORD" Secure="yes" Hidden="yes" />
+    <Property Id="SETUPPASSWORDCONFIRM" Hidden="yes" />
+    <Property Id="EXISTINGPASSWORDHASH" Secure="yes" Hidden="yes">
+      <RegistrySearch Id="ExistingPasswordHash" Root="HKLM" Key="Software\Policies\BeepTone" Name="SetupPasswordHash" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="SETUPPASSWORDHASH" Value="[EXISTINGPASSWORDHASH]" Before="HashSetupPassword" Sequence="execute"
+                 Condition="NOT SETUPPASSWORDHASH AND EXISTINGPASSWORDHASH" />
+    <Binary Id="BeepToneSetupCA" SourceFile="$(var.BeepToneSetup.TargetDir)BeepToneSetup.CA.dll" />
+    <CustomAction Id="HashSetupPassword" BinaryRef="BeepToneSetupCA" DllEntry="HashSetupPassword" Execute="immediate" Return="check" />
+
+    <UIRef Id="BeepToneUI" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="BeepTone">
+        <Directory Id="CABLEFOLDER" Name="VBCABLE" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Beep Tone">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="Policy" />
+    </Feature>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="TrayExe" Source="$(var.BeepTone.TargetPath)" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="TrayConfig" Source="$(var.BeepTone.TargetPath).config" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="CtlExe" Source="$(var.BeepToneCtl.TargetPath)" KeyPath="yes" />
+        <ServiceInstall Name="BeepToneGuard" DisplayName="Beep Tone Guard"
+                        Description="Keeps the call recording beep running for every signed-in user."
+                        Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service">
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="GuardControl" Name="BeepToneGuard" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component>
+        <File Id="CtlConfig" Source="$(var.BeepToneCtl.TargetPath).config" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="Readme" Source="..\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="EventSource">
+        <util:EventSource Name="BeepTone" Log="Application" KeyPath="yes"
+                          EventMessageFile="[WindowsFolder]Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll" />
+      </Component>
+      <!-- The in-app VB-Cable install leaves only a result file here. -->
+      <Component Id="CableFolder" Directory="CABLEFOLDER">
+        <RemoveFile Id="CableFiles" Name="*" On="uninstall" />
+        <RemoveFolder Id="CableFolderRemove" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\BeepTone" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Policy" Directory="INSTALLFOLDER">
+      <Component Id="PolicyFrequency" Condition="FREQUENCYHZ">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="FrequencyHz" Value="[FREQUENCYHZ]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyDuration" Condition="DURATIONMS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="DurationMs" Value="[DURATIONMS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyInterval" Condition="INTERVALSECONDS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="IntervalSeconds" Value="[INTERVALSECONDS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyRamp" Condition="RAMPMS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="RampMs" Value="[RAMPMS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyLevel" Condition="LEVELDBFS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="LevelDbfs" Value="[LEVELDBFS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyDefaultMic" Condition="SETDEFAULTMICROPHONE">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="SetDefaultMicrophone" Value="[SETDEFAULTMICROPHONE]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyAllowPause" Condition="ALLOWPAUSE">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="AllowPause" Value="[ALLOWPAUSE]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyPauseMinutes" Condition="PAUSEMINUTES">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="PauseMinutes" Value="[PAUSEMINUTES]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyAllowStop" Condition="ALLOWSTOP">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="AllowStop" Value="[ALLOWSTOP]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyIgnoredApps" Condition="IGNOREDMICAPPS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="IgnoredMicApps" Value="[IGNOREDMICAPPS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyPassword" Condition="SETUPPASSWORDHASH">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="SetupPasswordHash" Value="[SETUPPASSWORDHASH]" Type="string" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- End every tray app before files are replaced or removed. The guard service is already stopped. -->
+    <SetProperty Id="KillTrays" Value="&quot;[System64Folder]taskkill.exe&quot; /F /IM BeepTone.exe" Before="KillTrays" Sequence="execute" />
+    <CustomAction Id="KillTrays" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+
+    <!-- Remove the PowerShell version's scheduled tasks, running script and compiled files, and warn in
+         the install log and event log when an administrator stop is set. Runs after the event source
+         is registered. -->
+    <SetProperty Id="PostInstall" Value="&quot;[INSTALLFOLDER]BeepToneCtl.exe&quot; post-install" Before="PostInstall" Sequence="execute" />
+    <CustomAction Id="PostInstall" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+
+    <InstallExecuteSequence>
+      <Custom Action="HashSetupPassword" Before="CostInitialize" Condition="SETUPPASSWORD" />
+      <Custom Action="KillTrays" After="StopServices" />
+      <Custom Action="PostInstall" After="WriteRegistryValues" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

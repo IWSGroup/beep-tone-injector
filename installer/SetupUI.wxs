@@ -1,0 +1,78 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    Install wizard: Welcome, Setup password, Ready to install, progress, finish.
+    Repair and remove from Apps go straight to the maintenance pages.
+    Silent installs (/qn) skip all of this and can pass SETUPPASSWORD or SETUPPASSWORDHASH instead.
+  -->
+  <Fragment>
+    <UI Id="BeepToneUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="Minimal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="SetupPasswordDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="SetupPasswordDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+
+      <Dialog Id="SetupPasswordDlg" Width="370" Height="270" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Setup password" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="290" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Agents need this password to change Beep Tone settings or stop the beep." />
+        <Control Id="Intro" Type="Text" X="20" Y="58" Width="330" Height="36" NoPrefix="yes"
+                 Text="Type a new setup password, or leave both boxes empty to keep the current one. A first install with both boxes empty uses the built-in default password." />
+        <Control Id="PasswordLabel" Type="Text" X="20" Y="102" Width="200" Height="12" Text="&amp;New password:" />
+        <Control Id="Password" Type="Edit" X="20" Y="116" Width="200" Height="17" Property="SETUPPASSWORD" Password="yes" />
+        <Control Id="ConfirmLabel" Type="Text" X="20" Y="142" Width="200" Height="12" Text="&amp;Type it again:" />
+        <Control Id="Confirm" Type="Edit" X="20" Y="156" Width="200" Height="17" Property="SETUPPASSWORDCONFIRM" Password="yes" />
+        <Control Id="Note" Type="Text" X="20" Y="184" Width="330" Height="36" NoPrefix="yes"
+                 Text="Only a one-way hash of the password is stored, in HKLM\Software\Policies\BeepTone. An administrator can also set it later with Group Policy." />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="WelcomeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="SpawnDialog" Value="PasswordMismatchDlg" Condition="SETUPPASSWORD &lt;&gt; SETUPPASSWORDCONFIRM" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Condition="SETUPPASSWORD = SETUPPASSWORDCONFIRM" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="PasswordMismatchDlg" Width="260" Height="85" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="Text" Type="Text" X="15" Y="15" Width="230" Height="30" NoPrefix="yes"
+                 Text="The two passwords do not match. Type the same password in both boxes, or leave both empty." />
+        <Control Id="OK" Type="PushButton" X="102" Y="57" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIOK)">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+</Wix>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Custom actions that run inside the installer. Built into BeepToneSetup.CA.dll. -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>BeepToneSetup</AssemblyName>
+    <RootNamespace>BeepTone.Setup</RootNamespace>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Only for SetupPassword.Hash, so the installer and the tray agree on the format. -->
+    <Compile Include="..\..\src\Shared\BeepCore.cs" Link="BeepCore.cs" />
+  </ItemGroup>
+</Project>

@@ -4,41 +4,139 @@ A Windows tray app that mixes a recording beep into the microphone and sends tha
 
 It does not record the call. It does not decide whether a beep is required.
 
-## Tone
+## Check the phone system first
 
-Setup saves these in `%LOCALAPPDATA%\BeepTone\config.json`. A new install starts at the defaults below.
+If the phone system can play the tone itself, use that instead of this app, or keep this app only as a backup. Webex Calling has a **Recording Reminder Tone** in Control Hub (user, Calling, Call recording) that repeats every chosen number of seconds and can play to internal users, external callers, or both. Many recording platforms have the same option.
+
+A tone from the phone system covers things this app cannot:
+
+- Muting in the softphone mutes this beep too, but the other party is still recorded.
+- Calls on a desk phone, a mobile, or a VDI session with Webex media offload never pass through this PC's microphone.
+- Softphone noise removal and automatic gain can weaken or remove a tone mixed into the microphone.
+
+Whichever way the tone is added, `BeepToneCtl.exe check-recordings` (below) checks the recordings themselves.
+
+## Start fresh: remove the PowerShell version
+
+Earlier versions were a PowerShell script, `BeepTone.ps1`. The installer removes its scheduled tasks, stops any running copy, and deletes its compiled files on its own. It keeps each user's `config.json`, because this version reads the same file. To remove everything and start clean instead, run these in an administrator PowerShell before installing:
+
+```powershell
+Get-ScheduledTask -TaskName 'BeepTone*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+```
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -match 'BeepTone\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+```powershell
+Get-ChildItem 'C:\Users\*\AppData\Local\BeepTone' -Directory -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+```
+
+```powershell
+Remove-ItemProperty -Path 'HKLM:\Software\BeepTone' -Name 'Disabled' -ErrorAction SilentlyContinue
+```
+
+In order, these remove every user's BeepTone scheduled tasks, end any running `BeepTone.ps1`, delete every user's settings, logs and compiled files, and clear the administrator stop flag. Run them in that order, so a watchdog task cannot restart the script. Skip the third one to keep each agent's saved microphone and tone. Skip the fourth one if an administrator stopped the beep on purpose and it should stay off.
+
+Then delete the folder that holds `BeepTone.ps1`.
+
+The PowerShell version made CABLE Output the Windows default microphone. If you are not installing this version, set the default back to the headset in Sound settings and check the softphone's microphone, because CABLE Output is silent without the app. Leave VB-Cable installed if you are moving to this version.
+
+## Install
+
+`BeepTone.msi` installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install. On the password page, type a new setup password twice, or leave both boxes empty to keep the current one (a first install then uses the built-in default). Only a one-way hash of the password is stored.
+
+To install without any prompts, for example from Intune or SCCM:
+
+```powershell
+msiexec /i BeepTone.msi /qn
+```
+
+It installs to `C:\Program Files\BeepTone`, where standard users cannot change it:
+
+- `BeepTone.exe`, the tray app that mixes the beep.
+- `BeepToneCtl.exe`, which is both the **Beep Tone Guard** service and the command-line tool.
+- `README.md`, opened from the tray.
+
+The guard service runs as LocalSystem and checks every signed-in session every 5 seconds. It starts `BeepTone.exe` when it is missing and restarts it when it hangs or stops beeping. A standard user cannot stop the service. The installer also registers the `BeepTone` event log source.
+
+Tone settings can be set from the install command line. Each value you pass is written to the policy key (below) and greyed out in setup:
+
+```powershell
+msiexec /i BeepTone.msi /qn LEVELDBFS=-30 INTERVALSECONDS=13 ALLOWPAUSE=0
+```
+
+| Property | Policy value | Meaning |
+|---|---|---|
+| `FREQUENCYHZ` | `FrequencyHz` | 1260-1540 |
+| `DURATIONMS` | `DurationMs` | 170-250 |
+| `INTERVALSECONDS` | `IntervalSeconds` | 12-15 |
+| `RAMPMS` | `RampMs` | 5-80 |
+| `LEVELDBFS` | `LevelDbfs` | -90 to -3 |
+| `SETDEFAULTMICROPHONE` | `SetDefaultMicrophone` | 1 keeps CABLE Output as the default microphone, 0 leaves it alone |
+| `ALLOWPAUSE` | `AllowPause` | 0 removes the pause option |
+| `PAUSEMINUTES` | `PauseMinutes` | 1-60 |
+| `ALLOWSTOP` | `AllowStop` | 0 removes **Stop beep** from the tray |
+| `IGNOREDMICAPPS` | `IgnoredMicApps` | Comma-separated apps allowed to use the physical microphone |
+| `SETUPPASSWORD` | `SetupPasswordHash` | A new setup password. The installer stores only its hash |
+| `SETUPPASSWORDHASH` | `SetupPasswordHash` | A hash from `BeepToneCtl.exe new-password-hash`, so the password never appears in a command line |
+
+Pass the same properties again when installing a newer version, because an upgrade replaces them. The setup password is the exception: an upgrade keeps the current one unless a new one is given.
+
+The installer does not clear an administrator stop (below), so a stop survives upgrades. If one is set, the beep stays off after install and the tray shows a grey icon. The install log (`msiexec /i BeepTone.msi /l*v install.log`) and the Application event log both say so. Run `BeepToneCtl.exe start` to turn it on.
+
+Install VB-Cable separately, through the same deployment tool. The MSI does not include it, because the driver is VB-Audio's to distribute; check their licence terms for business use. The tray's **Setup** window also has an **Install Virtual Cable** button for a single PC.
+
+The MSI is not code-signed. Deployment through Intune, SCCM or the methods above works as normal. Opening it by hand shows "Unknown publisher". If you use Windows Defender Application Control, allow the three files by hash.
+
+## Deploy to many PCs
+
+The MSI installs silently from any tool that can run `msiexec` as an administrator or as SYSTEM. It needs no user present and no restart. Exit code 0 means installed, 3010 means installed but a restart is pending, 1618 means another install was running (try again), and anything else is a failure; add `/l*v <file>` for a log.
+
+- **Intune**: add it as a Windows line-of-business app and put the properties in the command-line arguments, for example `LEVELDBFS=-30 SETUPPASSWORDHASH=pbkdf2-sha256$...`.
+- **Configuration Manager**: create an application with the install command `msiexec /i BeepTone.msi /qn /norestart` plus any properties, and the uninstall command `msiexec /x {product code} /qn`.
+- **Group Policy software installation**: assign the MSI to computers. It passes properties only through a transform (.mst) file, so it is simpler to set the tone and password with Group Policy Preferences registry items under `HKLM\Software\Policies\BeepTone` instead.
+- **PowerShell remoting**, from an administrator prompt. Copy the MSI to each PC first, because a remote session usually cannot read a network share (the Windows double-hop sign-in limit):
+
+```powershell
+$pcs = 'AGENT-PC01', 'AGENT-PC02'
+```
+
+```powershell
+foreach ($pc in $pcs) { Copy-Item .\BeepTone.msi "\\$pc\C$\Windows\Temp\" }
+```
+
+```powershell
+Invoke-Command -ComputerName $pcs { (Start-Process msiexec.exe -ArgumentList '/i C:\Windows\Temp\BeepTone.msi /qn /norestart /l*v C:\Windows\Temp\BeepTone-install.log' -Wait -PassThru).ExitCode }
+```
+
+Prefer `SETUPPASSWORDHASH` over `SETUPPASSWORD` in deployment tools, because tools often record their command lines. Make a hash once on any PC with Beep Tone installed with `BeepToneCtl.exe new-password-hash`.
+
+VB-Cable deploys the same way: its package includes a silent installer (`VBCABLE_Setup_x64.exe -i -h`). Deploy it before Beep Tone.
+
+## Set up each agent
+
+After install, the beep starts at sign-in with no prompt. It picks the microphone automatically (a headset first). To choose a specific microphone or change the tone, right-click the tray icon and choose **Setup**. Anyone can open it and look; the setup password is asked for only when saving a change.
+
+1. Choose the physical microphone. Virtual devices are not offered, so the mix cannot loop.
+2. Set the tone frequency, length, fade, and level with the sliders, or type an exact value in the box next to each one. Pick the spacing from the list. Settings set by policy are greyed out. **Hear it** plays the current settings on this PC only, before saving.
+3. Leave **Set CABLE Output as the Windows default microphone** checked. That sets the normal Windows input, the multimedia input, and the communications input to CABLE Output.
+4. Click **Save** and enter the setup password. **Save** stays greyed out until something changes.
+
+In the softphone, set the microphone to **CABLE Output (VB-Audio Virtual Cable)**, or to **Follow system setting**. Do not select the physical microphone there. If an app records from the physical microphone directly, the tray turns red and names the app.
+
+Headphones avoid the speaker feeding back into the microphone. The mixer adds about 50 ms of delay.
+
+## Tone
 
 - 1400 Hz, limited to 1260-1540
 - 200 ms long, limited to 170-250, with a 50 ms fade at each end so it eases in instead of popping
 - Repeats 13 seconds after the previous beep starts, limited to every 12-15 seconds
 - Level is the fixed dBFS value from setup, from -90 to -3. Closer to 0 is louder. It does not rise and fall with other audio on the call.
 
-The beep is timed from the audio clock, so it does not drift over a long shift. The first beep plays as soon as the mixer starts.
+Setup saves these in `%LOCALAPPDATA%\BeepTone\config.json`, unless policy sets them. Values outside these ranges are pulled back in, including values typed into `config.json` by hand. The beep is timed from the audio clock, so it does not drift over a long shift. The first beep plays as soon as the mixer starts. A beep that has started always finishes, so pausing or **Beep now** never cuts it off with a click.
 
 The mix uses only the local microphone. The other person's voice is not mixed back in, because that would echo them to themselves.
-
-## First run
-
-Agents do not need to be local administrators for a normal shift.
-
-1. Install [Windows PowerShell 5.1](https://learn.microsoft.com/powershell/scripting/install/installing-windows-powershell), which is already on Windows 10 and 11.
-2. Start the app:
-
-```powershell
-powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1"
-```
-
-The console closes and a setup window opens after the setup password is entered.
-
-3. Click **Install Virtual Cable**. That downloads [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and runs its installer. Windows asks for an administrator password on a standard user account. If that prompt is cancelled, the cable is not installed. If the cable does not appear after install, sign out or reboot and start the app again.
-4. Choose the physical microphone. The cable's own recording device is hidden so the mix cannot loop.
-5. Set the tone frequency, length, spacing, fade, and level.
-6. Leave **Set CABLE Output as the Windows default microphone** checked. That sets the normal Windows input, the multimedia input, and the communications input to CABLE Output.
-7. Save. This also registers the tasks that start the app at sign-in and bring it back if it stops. The mixer sets that default when it starts and again about every 15 seconds. It leaves the default alone during a Remote Desktop session, because that session does not see the machine's own microphone.
-
-In the softphone, set the microphone to **CABLE Output (VB-Audio Virtual Cable)**, or to **Follow system setting**. Follow system setting uses the Windows default input, which is CABLE Output when the checkbox above is on. Do not select the physical microphone there.
-
-Headphones avoid the speaker feeding back into the microphone. The mixer adds about 20 ms of delay.
 
 ## Softphone audio processing
 
@@ -50,34 +148,115 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 ## Tray
 
-The icon has no Quit. It turns amber for a moment each time a beep is sent, and red while the beep is not going out or is paused. A balloon names the problem, and it repeats about every two minutes until the beep returns. The menu is status, **Beep now**, **Pause beep for 15 minutes**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** asks for a password before any settings can be changed.
+The icon has no Quit. It turns amber for a moment each time a beep is sent, red while the beep is not going out or is paused, and grey while an administrator has the beep stopped. A red banner at the top of the screen says what is wrong. It does not take focus, can be hidden for 2 minutes, and appears even when Windows notifications are silenced. A notification also names the problem and repeats about every two minutes until the beep returns.
 
-**Pause beep for 15 minutes** stops only the tone. The microphone keeps working. The icon stays red and shows when the beep will return. After 15 minutes the beep turns itself back on. **Turn beep on** ends the pause sooner. No password is required.
+The menu shows the status, which apps are using the cable, **Beep now**, **Pause beep for 15 minutes**, **Stop beep**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** opens for anyone and asks for the password only when saving a change.
 
-**Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call. **Open readme** opens `README.md` from the same folder as `BeepTone.ps1`.
+**Pause beep for 15 minutes** stops only the tone. The microphone keeps working. The icon stays red and an amber banner shows when the beep will return. After 15 minutes the beep turns itself back on with a beep. **Turn beep on** ends the pause sooner. No password is required. Policy can change the length or turn pausing off. Every pause is logged. A pause file edited to last longer than one pause is removed and reported.
 
-Muting the microphone in the softphone, in Windows, or on the headset also mutes this beep, because the beep is part of that microphone signal.
+**Stop beep** asks for the setup password, then turns the beep off and closes the microphone until someone chooses **Start beep**, which needs no password. The stop is kept only while the tray runs, so it also ends at sign-out or restart, and it cannot be set by editing a file. The icon turns grey and an amber banner shows while it is stopped. Every stop and start goes to the event log. Policy `AllowStop` = 0 removes the option.
+
+**Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call.
+
+Muting in the softphone mutes the beep, because the beep is part of the microphone signal the softphone receives. Muting CABLE Output in Windows, for example with a keyboard mute key, does the same, and the tray reports it. Muting the physical microphone in Windows or on the headset silences the voice but not the beep.
+
+## What it checks while running
+
+- **The beep reaches the cable.** The mixer listens on CABLE Output and checks each beep at the set level. If two beeps in a row do not arrive, the tray turns red. The log records the level heard for every beep.
+- **No app skips the cable.** Every 2 seconds it looks for apps recording from a physical microphone. Calls in such an app have no beep, so the tray turns red and names the app. The Windows Sound control panel and Settings are ignored, because they open every microphone for their level meters. Policy `IgnoredMicApps` adds others.
+- **The cable is not muted.** A muted CABLE Input or CABLE Output in Windows is reported.
+- **Default devices.** About every 15 seconds, and as soon as Windows changes a default, it sets CABLE Output back as the default microphone (when enabled). It also makes sure no virtual cable is the default speaker, which would send the other party's voice back into the call. Both are skipped during Remote Desktop.
+- **The saved microphone.** If it is unplugged, the mixer uses a headset, then the Windows default, then any other physical microphone. It switches back as soon as the saved one is connected again. A fallback is never saved as the new choice. Devices are matched by their Windows ID and then by name, so plugging the same headset into another port still works.
+- **The microphone is still sending.** If no audio arrives for a second, the mixer reopens the devices.
 
 ## Keeping it running
 
-The mixer restarts itself if the microphone or cable drops. If the saved microphone is gone, it uses the Windows default microphone, then any other connected headset, and remembers that choice. It does not switch to the virtual cable's own recording device. It writes a heartbeat every second, including the time of the last beep. A per-user task starts it at sign-in. Another task checks about once a minute and starts it again if the process is gone, the heartbeat is older than 90 seconds, or the process has been up for at least 90 seconds without a beep for about two intervals.
+The mixer waits on the audio device instead of polling, runs with multimedia scheduling priority, and opts out of Windows background power throttling. It corrects for the small speed difference between the microphone's clock and the cable's, so delay stays steady instead of creeping up and then dropping speech. It writes a heartbeat every second with the time of the last beep and its state (running, paused, reconnecting, stopped). If the audio thread stops responding for 20 seconds, the tray app exits so the guard restarts it.
 
-An administrator can force it to stay stopped:
+The guard starts the tray app if it is gone. It restarts it if the heartbeat is more than 30 seconds old (checked twice, a few seconds apart, so waking from sleep does not trigger it), or if it has run for 90 seconds in the running state without a beep for about two intervals. It does not restart a tray app that is paused or waiting for a missing device, because a restart would not help. It backs off for 10 minutes after 5 starts in 10 minutes. It wakes at once when someone signs in or unlocks.
+
+An administrator can force the beep to stay off:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1" -Stop
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1" -Start
+& 'C:\Program Files\BeepTone\BeepToneCtl.exe' stop
 ```
 
-`-Stop` asks Windows to elevate, sets `HKLM\Software\BeepTone\Disabled`, and ends the mixer. The tasks will not bring it back, including after the next sign-in, until an administrator runs `-Start`. A standard user who cancels the approval prompt does not stop the beep. `-Start` clears the flag and starts the mixer as the signed-in user, not as administrator.
+```powershell
+& 'C:\Program Files\BeepTone\BeepToneCtl.exe' start
+```
+
+`stop` asks Windows to elevate and sets `HKLM\Software\BeepTone\Disabled`. Within a second every tray app stops the beep, closes the microphone, and turns grey with "Beep stopped by an administrator". It stays that way, including after the next sign-in, until an administrator runs `start`. A standard user who cancels the approval prompt does not stop the beep. After `start`, every tray app starts beeping again within a second, with no sign-out needed.
+
+## Policy
+
+Values under `HKLM\Software\Policies\BeepTone` override setup and are greyed out there. Set them with the MSI properties above, Group Policy Preferences, or Intune. Numbers can be DWORD or string values.
+
+| Value | Meaning |
+|---|---|
+| `FrequencyHz`, `DurationMs`, `IntervalSeconds`, `RampMs` | Tone settings, limited to the ranges above |
+| `LevelDbfs` | Tone level, for example `-30` |
+| `SetDefaultMicrophone` | 1 keeps CABLE Output as the default microphone, 0 leaves it alone |
+| `AllowPause` | 0 removes the pause option |
+| `PauseMinutes` | Pause length, 1-60 minutes |
+| `AllowStop` | 0 removes **Stop beep** from the tray |
+| `IgnoredMicApps` | Apps allowed to use the physical microphone, for example `SpeechRuntime.exe` |
+| `SetupPasswordHash` | Setup password hash from `BeepToneCtl.exe new-password-hash` |
+| `CablePackUrl` | VB-Cable package the Setup button downloads |
+| `CableSignerPattern` | Pattern the VB-Cable installer's signer must match |
+
+## Checking recordings
+
+```powershell
+& 'C:\Program Files\BeepTone\BeepToneCtl.exe' check-recordings 'D:\Recordings' --recurse --csv report.csv
+```
+
+This reads each WAV file (PCM, float, mu-law or A-law, any channel count) and finds the beeps. A recording passes when no stretch is longer than `--max-gap` seconds (default 18) without a beep, counting from the start and to the end. A call shorter than that can pass with no beep. The frequency comes from the settings, or from `--frequency`. The exit code is 1 if any recording fails, so a nightly job can alert on it. Convert compressed recordings (MP3, M4A) to WAV first.
 
 ## Other commands
 
+Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
+
+| Command | What it does |
+|---|---|
+| `selftest` | Checks the tone, the schedule, clock-drift correction, recovery from a microphone stall, beep detection under speech, the recording checker, the heartbeat and guard rules, the setting limits, the pause-file check, and the password hash. Needs no audio devices. |
+| `list-devices` | Lists microphones and playback devices. |
+| `test-mix --seconds 40` | Runs the real mixer without changing default devices, and reports whether every beep was heard on the cable. It opens the microphone while it runs. |
+| `guard-check` | Shows what the guard would do for this session, without doing it. |
+| `cleanup-legacy` | From an administrator prompt: removes the PowerShell version's tasks, running script and compiled files. |
+| `new-password-hash` | Makes a setup password hash for policy. |
+
+## Uninstall
+
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1" -ListDevices
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\BeepTone.ps1" -SelfTest
+msiexec /x BeepTone.msi /qn
 ```
 
-`-SelfTest` checks the beep length, duration, and frequency without using a microphone.
+This stops the guard, ends every tray app, and removes the files, the service, and any policy values the MSI wrote. It leaves each user's settings and logs, VB-Cable, and the Windows default microphone. If CABLE Output is still the default microphone, set it back to the headset in Sound settings, because it is silent without the app.
 
-Settings and the log are in `%LOCALAPPDATA%\BeepTone\`. When `beep-tone.log` passes 512 KB it is renamed to `beep-tone-YYYYMMDD-HHMMSS.log` and a new log starts. Only the seven newest archives are kept. The script file itself can live in a read-only folder. `config.json` can name a different playback device, such as a VoiceMeeter input, by changing `renderDeviceName` to a substring of that device's name.
+## Files
+
+Settings, the log and the heartbeat are in `%LOCALAPPDATA%\BeepTone\` for each user. When `beep-tone.log` passes 512 KB it is renamed to `beep-tone-YYYYMMDD-HHMMSS.log` and a new log starts. Only the seven newest archives are kept. Every 10 minutes the log records audio stats: delay range, clock correction, underruns, trims and capture glitches. `config.json` can name a different playback device, such as a VoiceMeeter input, by changing `renderDeviceName`.
+
+Events also go to the Windows Application log under source `BeepTone`, so they can be collected centrally:
+
+| ID | Event |
+|---|---|
+| 1000 | Beep or guard started |
+| 1001, 1002 | Administrator stop, start |
+| 1100, 1101 | Beep problem, cleared |
+| 1200, 1201 | Paused, pause ended |
+| 1202 | Pause file edited to last longer than one pause |
+| 1203, 1204 | Stopped with **Stop beep**, started with **Start beep** |
+| 1300, 1301 | An app is using the physical microphone directly, cleared |
+| 1400 | Settings saved |
+| 1500, 1501, 1502 | Guard started, restarted, or is backing off from the tray app |
+
+## Building
+
+Needs the .NET SDK (6 or later) on Windows. The .NET Framework 4.8 targeting pack comes with Visual Studio, or the SDK downloads it. WiX 5 comes from NuGet on the first build.
+
+```powershell
+.\build.ps1
+```
+
+To release a new version, raise `Version` in `Directory.Build.props` first, so the MSI upgrades installed copies. The build makes `BeepTone.exe` and `BeepToneCtl.exe` for .NET Framework 4.8, which is part of Windows 10 and 11, then `dist\BeepTone.msi`, and runs the self-test. The source is in `src\Shared` (audio engine and settings), `src\BeepTone` (tray app), `src\BeepToneCtl` (service and commands) and `installer` (MSI).
