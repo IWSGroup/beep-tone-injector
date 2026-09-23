@@ -87,7 +87,7 @@ namespace BeepTone
         {
             this.config = config;
             this.updateDefaults = updateDefaults;
-            Text = "Beep Tone setup";
+            Text = "Beep Tone " + BeepPaths.Version + " setup";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -281,6 +281,7 @@ namespace BeepTone
             foreach (AudioEndpoint e in outputs)
                 if (e.Name.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0) cable = true;
             cableLabel.Text = cable ? "Virtual cable is installed." : "Virtual cable is not installed.";
+            installButton.Visible = !cable;
             Select(micBox, mics, keepMic != null
                 ? AudioDevices.Match(mics, keepMic.Id, keepMic.Name)
                 : AudioDevices.Match(mics, config.CaptureDeviceId, config.CaptureDeviceName));

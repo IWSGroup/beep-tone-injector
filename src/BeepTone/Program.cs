@@ -21,7 +21,12 @@ namespace BeepTone
             };
 
             bool created;
-            using (var mutex = new Mutex(false, @"Local\BeepToneInjector", out created))
+            string mutexName = @"Local\BeepToneInjector";
+#if DEBUG
+            string testMutex = Environment.GetEnvironmentVariable("BEEPTONE_TEST_MUTEX");
+            if (!string.IsNullOrEmpty(testMutex)) mutexName = @"Local\" + testMutex;
+#endif
+            using (var mutex = new Mutex(false, mutexName, out created))
             {
                 bool owned;
                 try { owned = mutex.WaitOne(0, false); }

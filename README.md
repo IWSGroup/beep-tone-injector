@@ -80,12 +80,16 @@ msiexec /i BeepTone.msi /qn LEVELDBFS=-30 INTERVALSECONDS=13 ALLOWPAUSE=0
 | `IGNOREDMICAPPS` | `IgnoredMicApps` | Comma-separated apps allowed to use the physical microphone |
 | `SETUPPASSWORD` | `SetupPasswordHash` | A new setup password. The installer stores only its hash |
 | `SETUPPASSWORDHASH` | `SetupPasswordHash` | A hash from `BeepToneCtl.exe new-password-hash`, so the password never appears in a command line |
+| `CABLEPACKURL` | `CablePackUrl` | Where to download VB-Cable from, for example an internal file share or web server |
+| `INSTALLVBCABLE` | (none) | 0 skips installing VB-Cable |
+
+Upgrades and reinstalls need no preparation. When the installer asks Beep Tone to close, every tray app closes at once, so there is no "files in use" prompt, wait, or restart. The installer then stops the guard, replaces the files, and starts the guard again, which brings the tray back for every signed-in user. There is deliberately no Exit on the tray; **Stop beep** turns the beep off.
 
 Pass the same properties again when installing a newer version, because an upgrade replaces them. The setup password is the exception: an upgrade keeps the current one unless a new one is given.
 
 The installer does not clear an administrator stop (below), so a stop survives upgrades. If one is set, the beep stays off after install and the tray shows a grey icon. The install log (`msiexec /i BeepTone.msi /l*v install.log`) and the Application event log both say so. Run `BeepToneCtl.exe start` to turn it on.
 
-Install VB-Cable separately, through the same deployment tool. The MSI does not include it, because the driver is VB-Audio's to distribute; check their licence terms for business use. The tray's **Setup** window also has an **Install Virtual Cable** button for a single PC.
+**VB-Cable.** When VB-Cable is not installed, the MSI downloads it from VB-Audio at the end of the install, checks that VB-Audio signed the installer, and installs it silently. The MSI does not carry VB-Cable inside it, because the driver is VB-Audio's to distribute; check their licence terms for business use. This step never fails the Beep Tone install. If the PC cannot reach vb-audio.com, the signature does not match, or the VB-Cable installer does not finish within 5 minutes, the install log and the Application event log (ID 1601) say so, and the tray reports the missing cable. On a PC that cannot reach the internet, set `CABLEPACKURL` to a copy of `VBCABLE_Driver_Pack45.zip` on your network, or install VB-Cable with your deployment tool first and the MSI will skip it. Occasionally Windows needs a restart before a newly installed CABLE Input appears. `INSTALLVBCABLE=0` skips this step. The tray's **Setup** window also offers **Install Virtual Cable** on a PC without it.
 
 The MSI is not code-signed. Deployment through Intune, SCCM or the methods above works as normal. Opening it by hand shows "Unknown publisher". If you use Windows Defender Application Control, allow the three files by hash.
 
@@ -112,7 +116,7 @@ Invoke-Command -ComputerName $pcs { (Start-Process msiexec.exe -ArgumentList '/i
 
 Prefer `SETUPPASSWORDHASH` over `SETUPPASSWORD` in deployment tools, because tools often record their command lines. Make a hash once on any PC with Beep Tone installed with `BeepToneCtl.exe new-password-hash`.
 
-VB-Cable deploys the same way: its package includes a silent installer (`VBCABLE_Setup_x64.exe -i -h`). Deploy it before Beep Tone.
+The MSI installs VB-Cable too when it is missing (see Install). To deploy VB-Cable yourself instead, use its silent installer (`VBCABLE_Setup_x64.exe -i -h`) before Beep Tone, or pass `INSTALLVBCABLE=0`.
 
 ## Set up each agent
 
@@ -150,11 +154,13 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 The icon has no Quit. It turns amber for a moment each time a beep is sent, red while the beep is not going out or is paused, and grey while an administrator has the beep stopped. A red banner at the top of the screen says what is wrong. It does not take focus, can be hidden for 2 minutes, and appears even when Windows notifications are silenced. A notification also names the problem and repeats about every two minutes until the beep returns.
 
-The menu shows the status, which apps are using the cable, **Beep now**, **Pause beep for 15 minutes**, **Stop beep**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**. **Setup** opens for anyone and asks for the password only when saving a change.
+The menu shows the status, which apps are using the cable, **Beep now**, **Pause beep for 15 minutes**, **Stop beep**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**, then the installed version. The setup window's title shows the version too. **Setup** opens for anyone and asks for the password only when saving a change.
 
 **Pause beep for 15 minutes** stops only the tone. The microphone keeps working. The icon stays red and an amber banner shows when the beep will return. After 15 minutes the beep turns itself back on with a beep. **Turn beep on** ends the pause sooner. No password is required. Policy can change the length or turn pausing off. Every pause is logged. A pause file edited to last longer than one pause is removed and reported.
 
 **Stop beep** asks for the setup password, then turns the beep off and closes the microphone until someone chooses **Start beep**, which needs no password. The stop is kept only while the tray runs, so it also ends at sign-out or restart, and it cannot be set by editing a file. The icon turns grey and an amber banner shows while it is stopped. Every stop and start goes to the event log. Policy `AllowStop` = 0 removes the option.
+
+While an administrator has the beep stopped, the menu shows **Turn beep on (administrator)...** instead of **Stop beep**. It runs `BeepToneCtl.exe start` behind the Windows approval prompt, so only an administrator can use it.
 
 **Beep now** plays the tone into the call. **Hear beep on this PC** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call.
 
@@ -201,7 +207,7 @@ Values under `HKLM\Software\Policies\BeepTone` override setup and are greyed out
 | `AllowStop` | 0 removes **Stop beep** from the tray |
 | `IgnoredMicApps` | Apps allowed to use the physical microphone, for example `SpeechRuntime.exe` |
 | `SetupPasswordHash` | Setup password hash from `BeepToneCtl.exe new-password-hash` |
-| `CablePackUrl` | VB-Cable package the Setup button downloads |
+| `CablePackUrl` | VB-Cable package the installer and the Setup button download |
 | `CableSignerPattern` | Pattern the VB-Cable installer's signer must match |
 
 ## Checking recordings
@@ -224,6 +230,8 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 | `guard-check` | Shows what the guard would do for this session, without doing it. |
 | `cleanup-legacy` | From an administrator prompt: removes the PowerShell version's tasks, running script and compiled files. |
 | `new-password-hash` | Makes a setup password hash for policy. |
+| `version` | Shows the installed version. |
+| `install-cable-if-missing` | From an administrator prompt: installs VB-Cable if it is missing, the same way the installer does. `--dry-run` downloads it and checks the signature without installing. |
 
 ## Uninstall
 
@@ -250,6 +258,7 @@ Events also go to the Windows Application log under source `BeepTone`, so they c
 | 1300, 1301 | An app is using the physical microphone directly, cleared |
 | 1400 | Settings saved |
 | 1500, 1501, 1502 | Guard started, restarted, or is backing off from the tray app |
+| 1600, 1601 | VB-Cable installed by the installer, or could not be installed |
 
 ## Building
 

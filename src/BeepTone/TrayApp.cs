@@ -27,6 +27,7 @@ namespace BeepTone
         readonly Icon stoppedIcon;
         readonly ToolStripItem beepItem;
         readonly ToolStripMenuItem stopItem;
+        readonly InstallerCloseWindow installerClose;
         readonly Timer timer;
         readonly Timer flashTimer;
         AlertBanner banner;
@@ -72,9 +73,12 @@ namespace BeepTone
             menu.Items.Add("Setup", null, delegate { ShowSetup(); });
             menu.Items.Add("Open readme", null, delegate { OpenReadme(); });
             menu.Items.Add("Open log", null, delegate { OpenLog(); });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Beep Tone " + BeepPaths.Version) { Enabled = false });
             pauseItem.Click += delegate { TogglePause(); };
 
             notify = new NotifyIcon { Icon = idleIcon, Visible = true, Text = "Beep tone starting", ContextMenuStrip = menu };
+            installerClose = new InstallerCloseWindow(CloseForInstaller);
             BeepFiles.Log("tray icon is showing");
 
             flashTimer = new Timer { Interval = 700 };
@@ -111,11 +115,22 @@ namespace BeepTone
             {
                 timer.Dispose();
                 flashTimer.Dispose();
+                installerClose.DestroyHandle();
                 notify.Visible = false;
                 notify.Dispose();
                 ClearBanner();
             }
             base.Dispose(disposing);
+        }
+
+        // An installer replacing Beep Tone's files asks it to close through Windows Restart Manager. Closing at
+        // once lets the install go ahead without a "files in use" prompt, a wait, or a restart. The guard
+        // service starts the tray again when the install finishes.
+        void CloseForInstaller()
+        {
+            BeepFiles.Log("closing because an installer is updating Beep Tone");
+            StopMixer();
+            ExitThread();
         }
 
         static Icon MakeIcon(Color color)
@@ -246,7 +261,8 @@ namespace BeepTone
             StopMixer();
             ClearBanner();
             ShowStopped("Beep stopped by an administrator");
-            stopItem.Visible = false;
+            stopItem.Text = AdminStartLabel;
+            stopItem.Visible = true;
             BeepFiles.Log("beep is off because an administrator stopped it on this PC");
             if (announce) Balloon(6000, "An administrator turned the beep off on this PC.", ToolTipIcon.Info);
         }
@@ -255,6 +271,7 @@ namespace BeepTone
         {
             stoppedByAdmin = false;
             BeepFiles.Log("an administrator turned the beep back on");
+            stopItem.Text = stoppedByUser ? "Start beep" : "Stop beep...";
             stopItem.Visible = BeepPolicy.AllowStop || stoppedByUser;
             if (stoppedByUser) return;
             beepItem.Enabled = true;
@@ -263,8 +280,15 @@ namespace BeepTone
             StartMixer();
         }
 
+        const string AdminStartLabel = "Turn beep on (administrator)...";
+
         void ToggleStop()
         {
+            if (stoppedByAdmin)
+            {
+                StartAsAdministrator();
+                return;
+            }
             if (stoppedByUser)
             {
                 StartFromMenu();
@@ -276,6 +300,25 @@ namespace BeepTone
                 if (password.ShowDialog() != DialogResult.OK) return;
             }
             StopFromMenu();
+        }
+
+        // Only an administrator can clear an administrator stop, so this runs "BeepToneCtl.exe start" behind
+        // the Windows approval prompt. The tray notices the stop is cleared within a second.
+        void StartAsAdministrator()
+        {
+            var start = new ProcessStartInfo(Path.Combine(BeepPaths.InstallDir, "BeepToneCtl.exe"), "start")
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            try { Process.Start(start); }
+            catch (System.ComponentModel.Win32Exception) { }
+            catch (Exception ex)
+            {
+                BeepFiles.Log("could not start BeepToneCtl.exe: " + ex.Message);
+                MessageBox.Show("An administrator can turn the beep on with:\r\nBeepToneCtl.exe start", "Beep Tone");
+            }
         }
 
         void StopFromMenu()
@@ -450,7 +493,7 @@ namespace BeepTone
         void SetIcon()
         {
             if (flashTimer.Enabled) return;
-            Icon want = iconWarning ? warningIcon : idleIcon;
+            Icon want = stoppedByAdmin || stoppedByUser ? stoppedIcon : (iconWarning ? warningIcon : idleIcon);
             if (notify.Icon != want) notify.Icon = want;
         }
 

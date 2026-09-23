@@ -911,6 +911,8 @@ namespace BeepTone
         public const int GuardLaunched = 1500;
         public const int GuardRestarted = 1501;
         public const int GuardBackoff = 1502;
+        public const int CableInstalled = 1600;
+        public const int CableInstallFailed = 1601;
 
         static int available = -1;
 

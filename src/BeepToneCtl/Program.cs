@@ -26,6 +26,9 @@ namespace BeepTone
   guard-check                    Show what the guard service would do for this session, without doing it.
   cleanup-legacy                 Administrator: remove leftovers of the PowerShell version.
   post-install                   Run by the installer: cleanup-legacy, then report an administrator stop.
+  install-cable-if-missing [--dry-run]
+                                 Administrator: download and install VB-Cable if it is not installed.
+                                 --dry-run downloads and checks the signature only.
   new-password-hash              Make a setup password hash for the SetupPasswordHash policy value.
 ";
 
@@ -39,6 +42,7 @@ namespace BeepTone
                     ServiceBase.Run(new GuardService());
                     return 0;
                 }
+                Console.WriteLine("Beep Tone " + BeepPaths.Version);
                 Console.Write(Usage);
                 return 0;
             }
@@ -58,6 +62,9 @@ namespace BeepTone
                     case "cleanup-legacy": return Cleanup();
                     case "post-install": return PostInstall();
                     case "new-password-hash": return NewPasswordHash();
+                    case "install-cable-if-missing":
+                        if (!Flag(args, "--dry-run") && !IsAdmin()) return Fail("Run this from an administrator command prompt.");
+                        return CableInstall.InstallIfMissing(Flag(args, "--dry-run"));
                     case "install-cable":
                         if (args.Length < 3) return Fail("install-cable needs the package path and its SHA-256.");
                         return CableInstall.Run(args[1], args[2]);
@@ -65,6 +72,10 @@ namespace BeepTone
                     case "-h":
                     case "--help":
                     case "/?":
+                    case "version":
+                    case "--version":
+                        Console.WriteLine("Beep Tone " + BeepPaths.Version);
+                        if (command == "version" || command == "--version") return 0;
                         Console.Write(Usage);
                         return 0;
                 }

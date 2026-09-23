@@ -37,6 +37,16 @@ namespace BeepTone
         public static string CableDir { get { return Path.Combine(DataDir, "VBCABLE"); } }
         public static string InstallDir { get { return Path.GetDirectoryName(typeof(BeepPaths).Assembly.Location); } }
 
+        // "2.0.4", from Version in Directory.Build.props, the same number the MSI shows.
+        public static string Version
+        {
+            get
+            {
+                System.Version v = typeof(BeepPaths).Assembly.GetName().Version;
+                return v.Major + "." + v.Minor + "." + v.Build;
+            }
+        }
+
         public static void Initialize()
         {
             try { Directory.CreateDirectory(DataDir); } catch { }
@@ -49,6 +59,7 @@ namespace BeepTone
     public static class BeepPolicy
     {
         public const string Key = @"Software\Policies\BeepTone";
+        public const string DefaultCablePackUrl = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
         internal static bool Ignore;
 
         public static bool TryGet(string name, out object value)

@@ -14,12 +14,10 @@ namespace BeepTone
     // change it, and installs only the exact file downloaded and only if VB-Audio signed it.
     static class VirtualCable
     {
-        const string DefaultUrl = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
-
         public static bool Install()
         {
             Directory.CreateDirectory(BeepPaths.CableDir);
-            string url = BeepPolicy.GetString("CablePackUrl", DefaultUrl);
+            string url = BeepPolicy.GetString("CablePackUrl", BeepPolicy.DefaultCablePackUrl);
             string zip = Path.Combine(BeepPaths.CableDir, "VBCABLE_Driver_Pack.zip");
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             BeepFiles.Log("downloading virtual cable from " + url);

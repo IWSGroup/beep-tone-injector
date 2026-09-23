@@ -7,6 +7,7 @@
       - optional policy values from the command line, for example:
           msiexec /i BeepTone.msi /qn LEVELDBFS=-30 ALLOWPAUSE=0
     The wizard asks for a new setup password (optional). Silent installs can pass SETUPPASSWORD=... instead.
+    It installs VB-Cable when it is missing (INSTALLVBCABLE=0 skips that).
     It also removes leftovers of the PowerShell version (scheduled tasks, running script, compiled files),
     and warns in the install log and event log when an administrator stop is set.
   -->
@@ -29,6 +30,10 @@
     <Property Id="ALLOWSTOP" Secure="yes" />
     <Property Id="IGNOREDMICAPPS" Secure="yes" />
     <Property Id="SETUPPASSWORDHASH" Secure="yes" Hidden="yes" />
+    <Property Id="CABLEPACKURL" Secure="yes" />
+
+    <!-- VB-Cable: installed after Beep Tone when missing. INSTALLVBCABLE=0 skips it. -->
+    <Property Id="INSTALLVBCABLE" Value="1" Secure="yes" />
 
     <!-- Setup password: typed in the wizard, or SETUPPASSWORD=... on the command line. It is turned
          into SETUPPASSWORDHASH before costing, and only the hash is written. Left empty, an upgrade
@@ -122,6 +127,9 @@
       <Component Id="PolicyIgnoredApps" Condition="IGNOREDMICAPPS">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="IgnoredMicApps" Value="[IGNOREDMICAPPS]" Type="string" KeyPath="yes" />
       </Component>
+      <Component Id="PolicyCableUrl" Condition="CABLEPACKURL">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="CablePackUrl" Value="[CABLEPACKURL]" Type="string" KeyPath="yes" />
+      </Component>
       <Component Id="PolicyPassword" Condition="SETUPPASSWORDHASH">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="SetupPasswordHash" Value="[SETUPPASSWORDHASH]" Type="string" KeyPath="yes" />
       </Component>
@@ -137,10 +145,16 @@
     <SetProperty Id="PostInstall" Value="&quot;[INSTALLFOLDER]BeepToneCtl.exe&quot; post-install" Before="PostInstall" Sequence="execute" />
     <CustomAction Id="PostInstall" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
+    <!-- Download and install VB-Cable when it is missing. It checks VB-Audio's signature, gives up
+         after 5 minutes, and never fails the install; problems go to this log and the event log. -->
+    <SetProperty Id="InstallVBCable" Value="&quot;[INSTALLFOLDER]BeepToneCtl.exe&quot; install-cable-if-missing" Before="InstallVBCable" Sequence="execute" />
+    <CustomAction Id="InstallVBCable" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+
     <InstallExecuteSequence>
       <Custom Action="HashSetupPassword" Before="CostInitialize" Condition="SETUPPASSWORD" />
       <Custom Action="KillTrays" After="StopServices" />
       <Custom Action="PostInstall" After="WriteRegistryValues" Condition="NOT REMOVE" />
+      <Custom Action="InstallVBCable" After="PostInstall" Condition="NOT REMOVE AND INSTALLVBCABLE &lt;&gt; &quot;0&quot;" />
     </InstallExecuteSequence>
   </Package>
 </Wix>
