@@ -614,6 +614,88 @@ namespace BeepTone
         }
     }
 
+    // Finds a beep anywhere in a band, such as the 1260-1540 Hz a beep tone may use. Hann-windowed
+    // Goertzel filters every 20 Hz across the band, plus 200 Hz either side for the neighbour check.
+    // Each block reports the strongest filter in the band and how far it stands above the filters
+    // 100 Hz and 200 Hz either side of it, so voiced speech (a comb of harmonics) is still rejected.
+    public sealed class ToneBandDetector
+    {
+        const double StepHz = 20;
+        readonly int blockSize;
+        readonly double[] window;
+        readonly double[] frequencies;
+        readonly double[] coeff;
+        readonly double[] s1;
+        readonly double[] s2;
+        readonly double[] power;
+        readonly int first;
+        readonly int last;
+        readonly int near;
+        readonly int far;
+        int n;
+
+        public double LastAmplitude;
+        public double LastNeighbourRatio;
+        public double LastFrequency;
+        public readonly double BlockSeconds;
+
+        public ToneBandDetector(int sampleRate, double lowHz, double highHz, int blockMs)
+        {
+            blockSize = Math.Max(32, sampleRate * blockMs / 1000);
+            BlockSeconds = blockSize / (double)sampleRate;
+            window = new double[blockSize];
+            for (int i = 0; i < blockSize; i++) window[i] = 0.5 - 0.5 * Math.Cos(2.0 * Math.PI * i / (blockSize - 1));
+            near = (int)Math.Round(100 / StepHz);
+            far = (int)Math.Round(200 / StepHz);
+            int steps = (int)Math.Round((highHz - lowHz) / StepHz);
+            int count = steps + 1 + 2 * far;
+            frequencies = new double[count];
+            coeff = new double[count];
+            for (int k = 0; k < count; k++)
+            {
+                frequencies[k] = lowHz + (k - far) * StepHz;
+                coeff[k] = 2.0 * Math.Cos(2.0 * Math.PI * frequencies[k] / sampleRate);
+            }
+            s1 = new double[count];
+            s2 = new double[count];
+            power = new double[count];
+            first = far;
+            last = far + steps;
+        }
+
+        // Returns true when a block has completed.
+        public bool Feed(float sample)
+        {
+            double x = sample * window[n];
+            for (int k = 0; k < coeff.Length; k++)
+            {
+                double s0 = x + coeff[k] * s1[k] - s2[k];
+                s2[k] = s1[k];
+                s1[k] = s0;
+            }
+            n++;
+            if (n < blockSize) return false;
+            for (int k = 0; k < coeff.Length; k++)
+            {
+                power[k] = s1[k] * s1[k] + s2[k] * s2[k] - coeff[k] * s1[k] * s2[k];
+                s1[k] = s2[k] = 0;
+            }
+            n = 0;
+            int best = first;
+            for (int k = first + 1; k <= last; k++) if (power[k] > power[best]) best = k;
+            double worst = Math.Max(Math.Max(power[best - far], power[best - near]), Math.Max(power[best + near], power[best + far]));
+            LastAmplitude = 4.0 * Math.Sqrt(Math.Max(0, power[best])) / blockSize;
+            LastNeighbourRatio = worst <= 1e-24 ? (power[best] > 1e-24 ? 1e6 : 0) : power[best] / worst;
+            // The filters are 20 Hz apart; a parabola through the peak and its two neighbours (in dB)
+            // places the tone to within a few Hz.
+            double left = Math.Log(power[best - 1] + 1e-30), mid = Math.Log(power[best] + 1e-30), right = Math.Log(power[best + 1] + 1e-30);
+            double curve = left - 2 * mid + right;
+            double offset = curve < 0 ? Math.Max(-0.5, Math.Min(0.5, 0.5 * (left - right) / curve)) : 0;
+            LastFrequency = frequencies[best] + offset * StepHz;
+            return true;
+        }
+    }
+
     // Groups detector blocks into tone bursts the length of a beep.
     public sealed class BeepBurstFinder
     {
@@ -622,6 +704,7 @@ namespace BeepTone
         int run;
         double runStart;
         double runPeak;
+        double runFrequency;
 
         public BeepBurstFinder(double blockSeconds, double minSeconds, double maxSeconds)
         {
@@ -632,12 +715,22 @@ namespace BeepTone
         // Feed one block. Returns true when a finished burst qualifies as a beep.
         public bool Block(bool tone, double timeSeconds, double amplitude, out double beepStart, out double beepPeak)
         {
+            double frequency;
+            return Block(tone, timeSeconds, amplitude, 0, out beepStart, out beepPeak, out frequency);
+        }
+
+        // As above, also reporting the beep's average frequency.
+        public bool Block(bool tone, double timeSeconds, double amplitude, double frequency,
+            out double beepStart, out double beepPeak, out double beepFrequency)
+        {
             beepStart = 0;
             beepPeak = 0;
+            beepFrequency = 0;
             if (tone)
             {
-                if (run == 0) { runStart = timeSeconds; runPeak = 0; }
+                if (run == 0) { runStart = timeSeconds; runPeak = 0; runFrequency = 0; }
                 run++;
+                runFrequency += frequency;
                 if (amplitude > runPeak) runPeak = amplitude;
                 return false;
             }
@@ -646,6 +739,7 @@ namespace BeepTone
             {
                 beepStart = runStart;
                 beepPeak = runPeak;
+                beepFrequency = runFrequency / run;
             }
             run = 0;
             return qualifies;
@@ -660,25 +754,31 @@ namespace BeepTone
         public double FirstBeepSeconds = -1;
         public double MaxGapSeconds;
         public double MaxGapAtSeconds;
+        public double BeepFrequencyHz;
         public bool Pass;
         public string Error;
     }
 
-    // Checks a WAV recording for a beep at least every maxGapSeconds, including the stretch
-    // before the first beep and after the last one.
+    // Checks a recording for a beep at least every maxGapSeconds, including the stretch before the
+    // first beep and after the last one. A beep counts anywhere in the allowed 1260-1540 Hz, so a
+    // hardware beep device's tone is found as well as this app's.
     public static class RecordingChecker
     {
         const double MinToneDbfs = -70;
         const double MinNeighbourRatio = 10;
+        const double NarrowHz = 40;
 
         public static RecordingResult CheckFile(string path, double frequencyHz, double maxGapSeconds)
         {
             return CheckFile(path, frequencyHz, maxGapSeconds, delegate (string p) { return new WavReader(p); });
         }
 
+        // frequencyHz <= 0 checks the whole allowed band; otherwise only within 40 Hz of it.
         // open lets callers add formats, such as MP3 through Media Foundation.
         public static RecordingResult CheckFile(string path, double frequencyHz, double maxGapSeconds, Func<string, IFrameSource> open)
         {
+            double low = frequencyHz > 0 ? frequencyHz - NarrowHz : BeepLimits.MinFrequencyHz;
+            double high = frequencyHz > 0 ? frequencyHz + NarrowHz : BeepLimits.MaxFrequencyHz;
             var result = new RecordingResult();
             result.Path = path;
             try
@@ -686,36 +786,50 @@ namespace BeepTone
                 using (IFrameSource reader = open(path))
                 {
                     int channels = reader.Channels;
-                    var detectors = new ToneDetector[channels];
+                    var detectors = new ToneBandDetector[channels];
                     var finders = new BeepBurstFinder[channels];
                     var blockCounts = new long[channels];
                     for (int c = 0; c < channels; c++)
                     {
-                        detectors[c] = new ToneDetector(reader.SampleRate, frequencyHz, 20);
+                        detectors[c] = new ToneBandDetector(reader.SampleRate, low, high, 20);
                         finders[c] = new BeepBurstFinder(detectors[c].BlockSeconds, 0.1, 0.4);
                     }
                     double minAmplitude = Math.Pow(10.0, MinToneDbfs / 20.0) * Math.Sqrt(2.0);
                     var beeps = new List<double>();
+                    var beepFrequencies = new List<double>();
                     var frame = new float[channels];
                     long frames = 0;
                     while (reader.ReadFrame(frame))
                     {
                         for (int c = 0; c < channels; c++)
                         {
-                            ToneDetector d = detectors[c];
+                            ToneBandDetector d = detectors[c];
                             if (!d.Feed(frame[c])) continue;
                             bool tone = d.LastAmplitude >= minAmplitude && d.LastNeighbourRatio >= MinNeighbourRatio;
-                            double start, peak;
+                            double start, peak, hz;
                             double time = blockCounts[c] * d.BlockSeconds;
                             blockCounts[c]++;
-                            if (finders[c].Block(tone, time, d.LastAmplitude, out start, out peak)) beeps.Add(start);
+                            if (finders[c].Block(tone, time, d.LastAmplitude, d.LastFrequency, out start, out peak, out hz))
+                            {
+                                beeps.Add(start);
+                                beepFrequencies.Add(hz);
+                            }
                         }
                         frames++;
                     }
                     for (int c = 0; c < channels; c++)
                     {
-                        double start, peak;
-                        if (finders[c].Block(false, blockCounts[c] * detectors[c].BlockSeconds, 0, out start, out peak)) beeps.Add(start);
+                        double start, peak, hz;
+                        if (finders[c].Block(false, blockCounts[c] * detectors[c].BlockSeconds, 0, 0, out start, out peak, out hz))
+                        {
+                            beeps.Add(start);
+                            beepFrequencies.Add(hz);
+                        }
+                    }
+                    if (beepFrequencies.Count > 0)
+                    {
+                        beepFrequencies.Sort();
+                        result.BeepFrequencyHz = beepFrequencies[beepFrequencies.Count / 2];
                     }
                     result.DurationSeconds = frames / (double)reader.SampleRate;
                     beeps.Sort();
@@ -1257,8 +1371,15 @@ namespace BeepTone
                 else if (!r1.Pass || r1.BeepCount != 6) errors.Add("mu-law file: " + r1.BeepCount + " beeps, max gap " + r1.MaxGapSeconds.ToString("0.0", CultureInfo.InvariantCulture));
                 if (r2.Error != null) errors.Add("pcm: " + r2.Error);
                 else if (r2.Pass || Math.Abs(r2.MaxGapSeconds - 26) > 0.5) errors.Add("gap file: pass=" + r2.Pass + ", max gap " + r2.MaxGapSeconds.ToString("0.0", CultureInfo.InvariantCulture));
+                string hardware = Path.Combine(dir, "hardware.wav");
+                WriteTestRecording(hardware, 16000, 70, 16, -1, false, 1310);
+                RecordingResult r3 = RecordingChecker.CheckFile(hardware, 0, 18);
+                RecordingResult r4 = RecordingChecker.CheckFile(hardware, 1400, 18);
+                if (r3.Error != null || !r3.Pass || r3.BeepCount != 5 || Math.Abs(r3.BeepFrequencyHz - 1310) > 20)
+                    errors.Add("1310 Hz beeps, full band: " + r3.BeepCount + " beeps at " + r3.BeepFrequencyHz + " Hz " + r3.Error);
+                if (r4.BeepCount != 0) errors.Add("1310 Hz beeps counted when only 1400 Hz was asked for");
                 if (errors.Count > 0) return Fail(errors);
-                return "8 kHz mu-law passes with 6 beeps; 16 kHz PCM with a missing beep fails with a "
+                return "1310 Hz beeps found anywhere in the allowed band; 8 kHz mu-law passes with 6 beeps; 16 kHz PCM with a missing beep fails with a "
                     + r2.MaxGapSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " s gap";
             }
             finally
@@ -1269,9 +1390,15 @@ namespace BeepTone
 
         internal static void WriteTestRecording(string path, int rate, int seconds, int interval, int skipBeepAt, bool muLaw)
         {
+            WriteTestRecording(path, rate, seconds, interval, skipBeepAt, muLaw, 1400);
+        }
+
+        internal static void WriteTestRecording(string path, int rate, int seconds, int interval, int skipBeepAt, bool muLaw, double frequencyHz)
+        {
             float[] voice = SpeechLike(rate, seconds, -18, 11);
             var settings = new BeepSettings();
             settings.LevelDbfs = -30;
+            settings.FrequencyHz = frequencyHz;
             float[] beep = BeepSynth.Create(rate, settings);
             for (int t = 0; t < seconds; t += interval)
             {

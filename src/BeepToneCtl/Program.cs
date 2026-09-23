@@ -21,7 +21,8 @@ namespace BeepTone
   test-mix [--seconds N]         Run the mixer for N seconds (default 40) and check each beep reaches the cable.
   check-recordings <file|folder> [--recurse] [--max-gap S] [--frequency HZ] [--csv FILE]
                                  Check WAV, MP3, M4A or WMA recordings for a beep at least every S
-                                 seconds (default 18).
+                                 seconds (default 18), anywhere from 1260 to 1540 Hz. --frequency
+                                 counts only beeps within 40 Hz of HZ.
   stop                           Administrator: turn the beep off on this PC until 'start'.
   start                          Administrator: turn the beep back on.
   guard-check                    Show what the guard service would do for this session, without doing it.
@@ -223,12 +224,14 @@ namespace BeepTone
 
         static int CheckRecordings(string[] args)
         {
-            if (args.Length < 2) return Fail("check-recordings needs a WAV file or a folder.");
+            if (args.Length < 2) return Fail("check-recordings needs a recording or a folder.");
             string path = args[1];
             double maxGap = Option(args, "--max-gap", 18);
+            // Without --frequency, any beep in the allowed 1260-1540 Hz counts, so beeps from a hardware
+            // beep device or another app are found too.
             double frequency = Option(args, "--frequency", 0);
-            if (frequency <= 0) frequency = BeepConfig.Load().FrequencyHz;
             string csv = TextOption(args, "--csv");
+            if (csv != null) csv = Path.GetFullPath(csv);
             string[] files;
             if (Directory.Exists(path))
                 files = Directory.GetFiles(path, "*.*", Flag(args, "--recurse") ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
@@ -248,10 +251,11 @@ namespace BeepTone
                 rows.Add(new[]
                 {
                     file, verdict, Round(r.DurationSeconds), r.BeepCount.ToString(CultureInfo.InvariantCulture),
+                    r.BeepCount > 0 ? Math.Round(r.BeepFrequencyHz).ToString(CultureInfo.InvariantCulture) : "",
                     Round(r.FirstBeepSeconds), Round(r.MaxGapSeconds), Round(r.MaxGapAtSeconds), r.Error ?? ""
                 });
             }
-            var header = new[] { "File", "Result", "Seconds", "Beeps", "FirstBeepAt", "LongestGap", "LongestGapFrom", "Error" };
+            var header = new[] { "File", "Result", "Seconds", "Beeps", "BeepHz", "FirstBeepAt", "LongestGap", "LongestGapFrom", "Error" };
             PrintTable(header, rows);
             if (csv != null)
             {
@@ -260,8 +264,12 @@ namespace BeepTone
                 foreach (string[] row in rows) text.AppendLine(string.Join(",", row.Select(Csv)));
                 File.WriteAllText(csv, text.ToString(), new UTF8Encoding(true));
             }
-            Console.WriteLine(rows.Count + " recording(s) checked at " + frequency.ToString(CultureInfo.InvariantCulture) + " Hz, longest allowed gap "
+            string band = frequency > 0
+                ? "within 40 Hz of " + frequency.ToString(CultureInfo.InvariantCulture) + " Hz"
+                : "anywhere from " + BeepLimits.MinFrequencyHz + " to " + BeepLimits.MaxFrequencyHz + " Hz";
+            Console.WriteLine(rows.Count + " recording(s) checked for beeps " + band + ", longest allowed gap "
                 + maxGap.ToString(CultureInfo.InvariantCulture) + " s. " + failed + " did not pass.");
+            if (csv != null) Console.WriteLine("Report written to " + csv);
             return failed > 0 ? 1 : 0;
         }
 
@@ -275,8 +283,8 @@ namespace BeepTone
             {
                 string gap = Path.Combine(dir, "gap.wav");
                 BeepSelfTest.WriteTestRecording(gap, 16000, 70, 13, 26, false);
-                RecordingResult plain = RecordingChecker.CheckFile(gap, 1400, 18);
-                RecordingResult mf = RecordingChecker.CheckFile(gap, 1400, 18, delegate (string p) { return new MediaFoundationReader(p); });
+                RecordingResult plain = RecordingChecker.CheckFile(gap, 0, 18);
+                RecordingResult mf = RecordingChecker.CheckFile(gap, 0, 18, delegate (string p) { return new MediaFoundationReader(p); });
                 if (mf.Error != null) return "FAIL media foundation decoding: " + mf.Error;
                 if (mf.BeepCount != plain.BeepCount || Math.Abs(mf.MaxGapSeconds - plain.MaxGapSeconds) > 0.1)
                     return "FAIL media foundation decoding: " + mf.BeepCount + " beeps, gap " + Round(mf.MaxGapSeconds)
