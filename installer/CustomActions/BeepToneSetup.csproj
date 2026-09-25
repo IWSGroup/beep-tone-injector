@@ -10,6 +10,10 @@
     <PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Packed into BeepToneSetup.CA.dll so the installer runs this on .NET 4. -->
+    <Content Include="CustomAction.config" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Only for SetupPassword.Hash, so the installer and the tray agree on the format. -->
     <Compile Include="..\..\src\Shared\BeepCore.cs" Link="BeepCore.cs" />
   </ItemGroup>

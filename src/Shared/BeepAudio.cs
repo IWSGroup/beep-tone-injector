@@ -25,13 +25,12 @@ namespace BeepTone
         // Endpoint form factors from mmdeviceapi.h.
         const int Speakers = 1, Headphones = 3, Microphone = 4, Headset = 5, Handset = 6;
 
-        static readonly Regex VirtualName = new Regex("cable|vb-audio|voicemeeter|virtual", RegexOptions.IgnoreCase);
         static readonly Regex PortNumber = new Regex(@"\(\d+-\s*");
         static string lastGoodSpeakerId;
 
         public static bool IsVirtualName(string name)
         {
-            return !string.IsNullOrEmpty(name) && VirtualName.IsMatch(name);
+            return VirtualDevices.IsVirtualName(name);
         }
 
         // "CABLE Output (VB-Audio Virtual Cable)" -> "CABLE Output", for messages people read.
@@ -184,10 +183,11 @@ namespace BeepTone
 
         static readonly string[] RoleNames = new string[] { "default", "multimedia", "communications" };
 
-        // Makes the cable the default microphone for every role (when micId is given) and makes
-        // sure no virtual device is the default speaker, which would send the other party's voice
-        // into the call. Returns one line per change.
-        public static string[] EnsureDefaults(string micId)
+        // Makes the cable the default microphone for every role (when micId is given), and makes sure
+        // the cable Beep Tone plays into (cableRenderId) is not the default speaker, which would send
+        // the other party's voice into the call. Any other speaker the user picks, including other
+        // virtual devices such as VoiceMeeter, is left alone. Returns one line per change.
+        public static string[] EnsureDefaults(string micId, string cableRenderId)
         {
             var changes = new List<string>();
             if (!string.IsNullOrEmpty(micId))
@@ -205,9 +205,9 @@ namespace BeepTone
             {
                 AudioEndpoint current = GetDefaultEndpoint("Render", role);
                 if (current == null) continue;
-                if (!current.IsVirtual)
+                if (string.IsNullOrEmpty(cableRenderId) || current.Id != cableRenderId)
                 {
-                    lastGoodSpeakerId = current.Id;
+                    if (!current.IsVirtual) lastGoodSpeakerId = current.Id;
                     continue;
                 }
                 if (replacement == null) replacement = PickSpeaker();

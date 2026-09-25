@@ -611,9 +611,9 @@ namespace BeepTone
             {
                 BeepConfig config = BeepConfig.Cached();
                 string micId = null;
+                AudioEndpoint render = AudioDevices.ResolveRender(config.RenderDeviceId, config.RenderDeviceName);
                 if (config.SetDefaultMicrophone)
                 {
-                    AudioEndpoint render = AudioDevices.ResolveRender(config.RenderDeviceId, config.RenderDeviceName);
                     AudioEndpoint cable = AudioDevices.FindPairedCapture(render) ?? AudioDevices.FindCableOutput();
                     if (cable != null)
                     {
@@ -629,7 +629,7 @@ namespace BeepTone
                             MessageBox.Show(message + " Choose it in the softphone, or set the microphone to Follow system setting after the cable is installed.", "Beep Tone");
                     }
                 }
-                foreach (string change in AudioDevices.EnsureDefaults(micId)) BeepFiles.Log(change);
+                foreach (string change in AudioDevices.EnsureDefaults(micId, render == null ? null : render.Id)) BeepFiles.Log(change);
             }
             catch (Exception ex)
             {

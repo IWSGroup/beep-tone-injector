@@ -155,6 +155,22 @@ namespace BeepTone
         }
     }
 
+    // Virtual audio cables, by the names their drivers give their devices. Real headsets can have
+    // "virtual" in their name ("Speakers (HyperX Virtual Surround Sound)"), so that word alone does
+    // not count. A virtual device is never offered as the microphone and never left as the default
+    // speaker, so a wrong match here hides a headset and keeps switching the default away from it.
+    public static class VirtualDevices
+    {
+        static readonly System.Text.RegularExpressions.Regex Pattern = new System.Text.RegularExpressions.Regex(
+            @"VB-Audio|VoiceMeeter|Virtual Audio Cable|\bCABLE(-[A-D])? (Input|Output)\b|\bCABLE In 16ch\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        public static bool IsVirtualName(string name)
+        {
+            return !string.IsNullOrEmpty(name) && Pattern.IsMatch(name);
+        }
+    }
+
     public enum WatchdogAction { None, Start, Restart }
 
     // Shared by the per-user watchdog task and the machine guard service.
@@ -1090,6 +1106,7 @@ namespace BeepTone
             Run(lines, "watchdog", TestWatchdog);
             Run(lines, "settings limits", TestLimits);
             Run(lines, "password", TestPassword);
+            Run(lines, "virtual devices", TestVirtualDevices);
             return lines.ToArray();
         }
 
@@ -1519,6 +1536,29 @@ namespace BeepTone
             c = s.Clamped();
             if (c.FrequencyHz != 1400 || c.LevelDbfs != -6) return "FAIL NaN or infinity was not replaced";
             return "out-of-range, NaN and infinity values are limited";
+        }
+
+        static string TestVirtualDevices()
+        {
+            var errors = new List<string>();
+            string[] virtualNames =
+            {
+                "CABLE Input (VB-Audio Virtual Cable)", "CABLE Output (VB-Audio Virtual Cable)",
+                "CABLE In 16ch (VB-Audio Virtual Cable)", "CABLE-A Input (VB-Audio Cable A)",
+                "VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)", "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)",
+                "Line 1 (Virtual Audio Cable)"
+            };
+            string[] realNames =
+            {
+                "Speakers (HyperX Virtual Surround Sound)", "Microphone (HyperX Virtual Surround Sound)",
+                "Headset Microphone (USB Audio Device)", "Speakers (Realtek(R) Audio)",
+                "Microphone (Jabra SPEAK 510 USB)", "Microphone (HD Pro Webcam C920)",
+                "Headphones (Cable Matters USB Audio Adapter)", "Remote Audio"
+            };
+            foreach (string name in virtualNames) if (!VirtualDevices.IsVirtualName(name)) errors.Add("missed " + name);
+            foreach (string name in realNames) if (VirtualDevices.IsVirtualName(name)) errors.Add("wrongly matched " + name);
+            if (errors.Count > 0) return Fail(errors);
+            return virtualNames.Length + " virtual cables recognised; HyperX Virtual Surround Sound and " + (realNames.Length - 2) + " other real devices are not";
         }
 
         static string TestPassword()
