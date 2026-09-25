@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
+using Microsoft.Win32;
 
 namespace BeepTone
 {
@@ -33,6 +34,11 @@ namespace BeepTone
         static readonly Regex CableInfSection = new Regex(@"^\s*\[\s*" + CableHardwareId + @"(\.[^\]]*)?\s*\]",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
         static readonly Regex OemInfName = new Regex(@"^oem\d+\.inf$", RegexOptions.IgnoreCase);
+
+        // VB-Cable's own entry in Installed apps ("VBCABLE, The Virtual Audio Cable"). VB-Cable A/B and
+        // VoiceMeeter have other names.
+        static readonly Regex CableAppName = new Regex(@"^VBCABLE, The Virtual Audio Cable\s*$", RegexOptions.IgnoreCase);
+        const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 
         static string TargetDir
         {
@@ -137,7 +143,8 @@ namespace BeepTone
                 Console.WriteLine("Could not list the VB-Cable device: " + ex.Message);
             }
             foreach (string inf in FindCableInfs()) infs.Add(inf);
-            if (devices.Count == 0 && infs.Count == 0)
+            List<CableApp> apps = FindCableApps();
+            if (devices.Count == 0 && infs.Count == 0 && apps.Count == 0)
             {
                 Console.WriteLine("VB-Cable is not installed. Nothing to do.");
                 return 0;
@@ -146,7 +153,19 @@ namespace BeepTone
             {
                 foreach (string id in devices) Console.WriteLine("Would remove the device " + id);
                 foreach (string inf in infs) Console.WriteLine("Would remove the driver package " + inf);
+                foreach (CableApp app in apps)
+                    Console.WriteLine("Would remove the Installed apps entry " + app.Key + (app.Folder == null ? "" : " and the folder " + app.Folder));
                 Console.WriteLine("Nothing was removed (dry run).");
+                return 0;
+            }
+            if (devices.Count == 0 && infs.Count == 0)
+            {
+                // The driver is already gone (for example removed by Beep Tone 2.0.10 or 2.0.11, which
+                // left this behind), so only the entry and folder are left.
+                RemoveCableApps(apps);
+                string leftover = "Removed what was left of VB-Cable: its entry in Installed apps and its folder.";
+                Console.WriteLine(leftover);
+                BeepEvents.Write(BeepEvents.CableRemoved, leftover, false);
                 return 0;
             }
 
@@ -167,10 +186,109 @@ namespace BeepTone
                 BeepEvents.Write(BeepEvents.CableRemoveFailed, text, true);
                 return 1;
             }
+            // Only once the driver is gone: otherwise VB-Audio's own uninstaller is still needed.
+            RemoveCableApps(apps);
             string done = "VB-Cable was removed." + (restart ? " Windows finishes removing it after the next restart." : "");
             Console.WriteLine(done);
             BeepEvents.Write(BeepEvents.CableRemoved, done, false);
             return restart ? RestartNeeded : 0;
+        }
+
+        sealed class CableApp
+        {
+            public RegistryView View;
+            public string Key;
+            public string Folder;
+        }
+
+        // VB-Cable's setup copies itself to Program Files\VB\CABLE and adds an entry to Installed apps
+        // that runs it. pnputil does not remove either, and that entry's Uninstall then fails with error
+        // -106, because the setup needs the driver files next to it and administrator rights.
+        static List<CableApp> FindCableApps()
+        {
+            var apps = new List<CableApp>();
+            foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                try
+                {
+                    using (RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                    using (RegistryKey uninstall = root.OpenSubKey(UninstallKey))
+                    {
+                        if (uninstall == null) continue;
+                        foreach (string name in uninstall.GetSubKeyNames())
+                        {
+                            using (RegistryKey entry = uninstall.OpenSubKey(name))
+                            {
+                                if (entry == null) continue;
+                                string display = entry.GetValue("DisplayName") as string ?? "";
+                                string publisher = entry.GetValue("Publisher") as string ?? "";
+                                if (!CableAppName.IsMatch(display) || publisher.IndexOf("VB-Audio", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                                if (apps.Exists(a => a.Key == name)) continue;
+                                apps.Add(new CableApp { View = view, Key = name, Folder = CableAppFolder(entry.GetValue("UninstallString") as string) });
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Could not read Installed apps: " + ex.Message);
+                }
+            }
+            return apps;
+        }
+
+        // The folder of the entry's setup program, only when it is VB-Cable's own CABLE folder.
+        static string CableAppFolder(string uninstallString)
+        {
+            if (string.IsNullOrEmpty(uninstallString)) return null;
+            string path = uninstallString.Trim();
+            if (path.StartsWith("\"")) path = path.Substring(1, Math.Max(0, path.IndexOf('"', 1) - 1));
+            else
+            {
+                int exe = path.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+                if (exe > 0) path = path.Substring(0, exe + 4);
+            }
+            try
+            {
+                if (!Path.GetFileName(path).StartsWith("VBCABLE_Setup", StringComparison.OrdinalIgnoreCase)) return null;
+                string folder = Path.GetDirectoryName(path);
+                return string.Equals(Path.GetFileName(folder), "CABLE", StringComparison.OrdinalIgnoreCase) ? folder : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        static void RemoveCableApps(List<CableApp> apps)
+        {
+            foreach (CableApp app in apps)
+            {
+                try
+                {
+                    using (RegistryKey root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, app.View))
+                        root.DeleteSubKeyTree(UninstallKey + "\\" + app.Key, false);
+                    Console.WriteLine("Removed the Installed apps entry " + app.Key);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Could not remove the Installed apps entry " + app.Key + ": " + ex.Message);
+                }
+                if (app.Folder == null || !Directory.Exists(app.Folder)) continue;
+                try
+                {
+                    Directory.Delete(app.Folder, true);
+                    Console.WriteLine("Removed the folder " + app.Folder);
+                    string parent = Path.GetDirectoryName(app.Folder);
+                    if (string.Equals(Path.GetFileName(parent), "VB", StringComparison.OrdinalIgnoreCase)
+                        && Directory.GetFileSystemEntries(parent).Length == 0)
+                        Directory.Delete(parent);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Could not remove the folder " + app.Folder + ": " + ex.Message);
+                }
+            }
         }
 
         // Driver packages in the driver store whose INF installs VB-Cable, including older versions

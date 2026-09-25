@@ -254,7 +254,7 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 | `new-password-hash` | Makes a setup password hash for policy. |
 | `version` | Shows the installed version. |
 | `install-cable-if-missing` | From an administrator prompt: installs VB-Cable if it is missing, the same way the installer does. `--dry-run` downloads it and checks the signature without installing. |
-| `remove-cable` | From an administrator prompt: removes VB-Cable (its device, CABLE Input and CABLE Output, and its driver), the same way uninstalling does. `--dry-run` lists what it would remove. VoiceMeeter and VB-Cable A/B are not touched. Exits with 3010 when a restart finishes the removal. |
+| `remove-cable` | From an administrator prompt: removes VB-Cable (its device, CABLE Input and CABLE Output, its driver, and its own entry in Installed apps and `Program Files\VB\CABLE` folder), the same way uninstalling does. `--dry-run` lists what it would remove. VoiceMeeter and VB-Cable A/B are not touched. Exits with 3010 when a restart finishes the removal. |
 
 ## Uninstall
 
@@ -262,7 +262,7 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 msiexec /x BeepTone.msi /qn /norestart
 ```
 
-This stops the guard, ends every tray app, and removes the files, the service, any policy values the MSI wrote, and VB-Cable. Windows then picks another default microphone; check that it is the headset, and check the softphone's microphone setting. Upgrading to a newer Beep Tone never removes VB-Cable. Each user's settings and logs are left behind.
+This stops the guard, ends every tray app, and removes the files, the service, any policy values the MSI wrote, and VB-Cable, including VB-Cable's own **VBCABLE, The Virtual Audio Cable** entry in Installed apps. Windows then picks another default microphone; check that it is the headset, and check the softphone's microphone setting. Upgrading to a newer Beep Tone never removes VB-Cable. Each user's settings and logs are left behind.
 
 Uninstalling from **Installed apps** asks **Also remove VB-Cable?** when it is installed. **Yes** is the default unless the second box on the install wizard's **Virtual cable** page was unticked.
 
@@ -276,7 +276,16 @@ msiexec /x BeepTone.msi /qn /norestart REMOVEVBCABLE=0
 
 If CABLE Output is still the default microphone after VB-Cable is kept, set it back to the headset in Sound settings, because it is silent without the app.
 
-Versions before 2.0.10 left VB-Cable installed. To remove it from a PC that had one of those uninstalled, remove **VB-Audio Virtual Cable** under **Sound, video and game controllers** in Device Manager (tick **Attempt to remove the driver for this device**), or run VB-Cable's installer and choose **Remove Driver**.
+Versions before 2.0.10 left VB-Cable installed. To remove it from a PC that had one of those uninstalled, remove **VB-Audio Virtual Cable** under **Sound, video and game controllers** in Device Manager (tick **Attempt to remove the driver for this device**), or run `VBCABLE_Setup_x64.exe` from VB-Audio's download as administrator and choose **Remove Driver**. The **Uninstall** button on VB-Cable's entry in Installed apps fails with error -106, because the copy it runs has no driver files next to it.
+
+Versions 2.0.10 and 2.0.11 removed the driver but left the **VBCABLE, The Virtual Audio Cable** entry in Installed apps, whose **Uninstall** fails with error -106. When Sound settings no longer lists CABLE Input or CABLE Output, remove the entry and its folder from an administrator PowerShell:
+
+```powershell
+Remove-Item 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:VBCABLE {87459874-1236-4469}' -Recurse
+Remove-Item 'C:\Program Files\VB\CABLE' -Recurse
+```
+
+Installing this version and uninstalling it again does the same.
 
 ## Files
 
