@@ -95,6 +95,7 @@ msiexec /i BeepTone.msi /qn LEVELDBFS=-30 INTERVALSECONDS=13 ALLOWPAUSE=0
 | `SETUPPASSWORDHASH` | `SetupPasswordHash` | A hash from `BeepToneCtl.exe new-password-hash`, so the password never appears in a command line |
 | `CABLEPACKURL` | `CablePackUrl` | Where to download VB-Cable from, for example an internal file share or web server |
 | `INSTALLVBCABLE` | (none) | 0 skips installing VB-Cable |
+| `REMOVEVBCABLE` | (none) | 0 keeps VB-Cable when Beep Tone is uninstalled. Remembered from install, and can also be given to the uninstall |
 
 Upgrades and reinstalls need no preparation. When the installer asks Beep Tone to close, every tray app closes at once, so there is no "files in use" prompt, wait, or restart. The installer then stops the guard, replaces the files, and starts the guard again, which brings the tray back for every signed-in user. There is deliberately no Exit on the tray; **Stop beep** turns the beep off.
 
@@ -129,7 +130,7 @@ Invoke-Command -ComputerName $pcs { (Start-Process msiexec.exe -ArgumentList '/i
 
 Prefer `SETUPPASSWORDHASH` over `SETUPPASSWORD` in deployment tools, because tools often record their command lines. Make a hash once on any PC with Beep Tone installed with `BeepToneCtl.exe new-password-hash`.
 
-The MSI installs VB-Cable too when it is missing (see Install). To deploy VB-Cable yourself instead, use its silent installer (`VBCABLE_Setup_x64.exe -i -h`) before Beep Tone, or pass `INSTALLVBCABLE=0`.
+The MSI installs VB-Cable too when it is missing (see Install). To deploy VB-Cable yourself instead, use its silent installer (`VBCABLE_Setup_x64.exe -i -h`) before Beep Tone, or pass `INSTALLVBCABLE=0`. Uninstalling Beep Tone removes VB-Cable whoever installed it, so also pass `REMOVEVBCABLE=0` if other software on the PC needs it.
 
 ## Set up each agent
 
@@ -253,6 +254,7 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 | `new-password-hash` | Makes a setup password hash for policy. |
 | `version` | Shows the installed version. |
 | `install-cable-if-missing` | From an administrator prompt: installs VB-Cable if it is missing, the same way the installer does. `--dry-run` downloads it and checks the signature without installing. |
+| `remove-cable` | From an administrator prompt: removes VB-Cable (its device, CABLE Input and CABLE Output, and its driver), the same way uninstalling does. `--dry-run` lists what it would remove. VoiceMeeter and VB-Cable A/B are not touched. |
 
 ## Uninstall
 
@@ -260,7 +262,17 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 msiexec /x BeepTone.msi /qn
 ```
 
-This stops the guard, ends every tray app, and removes the files, the service, and any policy values the MSI wrote. It leaves each user's settings and logs, VB-Cable, and the Windows default microphone. If CABLE Output is still the default microphone, set it back to the headset in Sound settings, because it is silent without the app.
+This stops the guard, ends every tray app, and removes the files, the service, any policy values the MSI wrote, and VB-Cable. Windows then picks another default microphone; check that it is the headset, and check the softphone's microphone setting. Occasionally Windows finishes removing VB-Cable after the next restart. Upgrading to a newer Beep Tone never removes VB-Cable. Each user's settings and logs are left behind.
+
+To keep VB-Cable, for example because other software uses it, pass `REMOVEVBCABLE=0` to the uninstall, or to the install so that uninstalling from Installed apps keeps it too:
+
+```powershell
+msiexec /x BeepTone.msi /qn REMOVEVBCABLE=0
+```
+
+If CABLE Output is still the default microphone after VB-Cable is kept, set it back to the headset in Sound settings, because it is silent without the app.
+
+Versions before 2.0.10 left VB-Cable installed. To remove it from a PC that had one of those uninstalled, remove **VB-Audio Virtual Cable** under **Sound, video and game controllers** in Device Manager (tick **Attempt to remove the driver for this device**), or run VB-Cable's installer and choose **Remove Driver**.
 
 ## Files
 
@@ -280,6 +292,7 @@ Events also go to the Windows Application log under source `BeepTone`, so they c
 | 1400 | Settings saved |
 | 1500, 1501, 1502 | Guard started, restarted, or is backing off from the tray app |
 | 1600, 1601 | VB-Cable installed by the installer, or could not be installed |
+| 1602, 1603 | VB-Cable removed by the uninstaller, or could not be fully removed |
 
 ## Building
 

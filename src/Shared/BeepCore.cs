@@ -1057,6 +1057,8 @@ namespace BeepTone
         public const int GuardBackoff = 1502;
         public const int CableInstalled = 1600;
         public const int CableInstallFailed = 1601;
+        public const int CableRemoved = 1602;
+        public const int CableRemoveFailed = 1603;
 
         static int available = -1;
 
