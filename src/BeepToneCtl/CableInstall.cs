@@ -28,7 +28,8 @@ namespace BeepTone
         const int PnpUtilTimeoutMs = 2 * 60 * 1000;
 
         // VB-Cable's device. VoiceMeeter and Cable A/B have their own hardware IDs, so they are never removed.
-        const string CableHardwareId = "VBAudioVACWDM";
+        const string CableHardwareId = VirtualDevices.CableHardwareId;
+        public const int RestartNeeded = 3010;
         static readonly Regex CableInfSection = new Regex(@"^\s*\[\s*" + CableHardwareId + @"(\.[^\]]*)?\s*\]",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
         static readonly Regex OemInfName = new Regex(@"^oem\d+\.inf$", RegexOptions.IgnoreCase);
@@ -110,10 +111,12 @@ namespace BeepTone
 
         // Removes VB-Cable's device, with CABLE Input and CABLE Output under it, and its driver packages.
         // The installer runs this when Beep Tone is uninstalled. It never fails the uninstall: problems go
-        // to the uninstall log and the event log. --dry-run lists what would be removed.
+        // to the uninstall log and the event log. --dry-run lists what would be removed. Returns 3010 when
+        // Windows finishes removing it only after a restart, which happens when an app still has the
+        // cable open.
         public static int Remove(bool dryRun)
         {
-            var devices = new List<string>();
+            var devices = new List<string>(VirtualDevices.CableDeviceIds());
             var infs = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
@@ -124,7 +127,7 @@ namespace BeepTone
                     {
                         string id = Convert.ToString(device["DeviceID"]);
                         string inf = Convert.ToString(device["InfName"]);
-                        if (!string.IsNullOrEmpty(id)) devices.Add(id);
+                        if (!string.IsNullOrEmpty(id) && !devices.Exists(d => string.Equals(d, id, StringComparison.OrdinalIgnoreCase))) devices.Add(id);
                         if (OemInfName.IsMatch(inf ?? "")) infs.Add(inf);
                     }
                 }
@@ -153,6 +156,8 @@ namespace BeepTone
                 PnpUtil("/remove-device \"" + id + "\" /subtree", "the device " + id, failures, ref restart);
             foreach (string inf in infs)
                 PnpUtil("/delete-driver " + inf + " /uninstall /force", "the driver package " + inf, failures, ref restart);
+            // pnputil does not always say so when the device is only marked for removal.
+            if (failures.Count == 0 && VirtualDevices.CableDeviceIds().Count > 0) restart = true;
 
             if (failures.Count > 0)
             {
@@ -165,7 +170,7 @@ namespace BeepTone
             string done = "VB-Cable was removed." + (restart ? " Windows finishes removing it after the next restart." : "");
             Console.WriteLine(done);
             BeepEvents.Write(BeepEvents.CableRemoved, done, false);
-            return 0;
+            return restart ? RestartNeeded : 0;
         }
 
         // Driver packages in the driver store whose INF installs VB-Cable, including older versions
@@ -219,7 +224,7 @@ namespace BeepTone
                     return;
                 }
                 Console.WriteLine((output.Result + errors.Result).Trim());
-                if (p.ExitCode == 3010) restart = true;
+                if (p.ExitCode == RestartNeeded) restart = true;
                 else if (p.ExitCode != 0) failures.Add("Removing " + what + " failed with code " + p.ExitCode + ".");
             }
         }

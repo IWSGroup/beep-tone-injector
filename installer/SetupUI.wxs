@@ -1,6 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <!--
-    Install wizard: Welcome, Setup password, Ready to install, progress, finish.
+    Install wizard: Welcome, Setup password, VB-Cable, Ready to install, progress, finish.
     Repair and remove from Apps go straight to the maintenance pages.
     Silent installs (/qn) skip all of this and can pass SETUPPASSWORD or SETUPPASSWORDHASH instead.
   -->
@@ -27,7 +27,7 @@
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="SetupPasswordDlg" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
 
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="SetupPasswordDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="VirtualCableDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
 
@@ -57,7 +57,38 @@
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
           <Publish Event="SpawnDialog" Value="PasswordMismatchDlg" Condition="SETUPPASSWORD &lt;&gt; SETUPPASSWORDCONFIRM" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Condition="SETUPPASSWORD = SETUPPASSWORDCONFIRM" />
+          <Publish Event="NewDialog" Value="VirtualCableDlg" Condition="SETUPPASSWORD = SETUPPASSWORDCONFIRM" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="VirtualCableDlg" Width="370" Height="270" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="290" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Virtual cable" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="290" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Beep Tone plays the beep into VB-Cable, a free virtual audio cable." />
+        <Control Id="Intro" Type="Text" X="20" Y="58" Width="330" Height="36" NoPrefix="yes"
+                 Text="Without VB-Cable there is no beep. It is downloaded from VB-Audio (vb-audio.com) at the end of the install, and only installed when VB-Audio signed it." />
+        <Control Id="InstallCable" Type="CheckBox" X="20" Y="100" Width="330" Height="17" Property="INSTALLVBCABLEUI" CheckBoxValue="1"
+                 Text="&amp;Install VB-Cable if it is not installed yet" />
+        <Control Id="RemoveCable" Type="CheckBox" X="20" Y="122" Width="330" Height="17" Property="REMOVEVBCABLEUI" CheckBoxValue="1"
+                 Text="&amp;Remove VB-Cable when Beep Tone is uninstalled" />
+        <Control Id="Note" Type="Text" X="20" Y="150" Width="330" Height="48" NoPrefix="yes"
+                 Text="Untick the first box if you install VB-Cable yourself. Untick the second if other software on this PC uses VB-Cable. Uninstalling asks again before removing it." />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="SetupPasswordDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Property="INSTALLVBCABLE" Value="1" Condition="INSTALLVBCABLEUI" />
+          <Publish Property="INSTALLVBCABLE" Value="0" Condition="NOT INSTALLVBCABLEUI" />
+          <Publish Property="REMOVEVBCABLE" Value="1" Condition="REMOVEVBCABLEUI" />
+          <Publish Property="REMOVEVBCABLE" Value="0" Condition="NOT REMOVEVBCABLEUI" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
           <Publish Event="SpawnDialog" Value="CancelDlg" />

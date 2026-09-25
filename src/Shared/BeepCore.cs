@@ -169,6 +169,35 @@ namespace BeepTone
         {
             return !string.IsNullOrEmpty(name) && Pattern.IsMatch(name);
         }
+
+        // VB-Cable's device. VoiceMeeter and VB-Cable A/B have their own hardware IDs.
+        public const string CableHardwareId = "VBAudioVACWDM";
+
+        // Instance IDs of the VB-Cable devices Windows knows, including one whose removal is waiting
+        // for a restart. Reads the registry, so it needs no administrator rights.
+        public static List<string> CableDeviceIds()
+        {
+            var ids = new List<string>();
+            try
+            {
+                using (var root = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+                using (var media = root.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\ROOT\MEDIA"))
+                {
+                    if (media == null) return ids;
+                    foreach (string name in media.GetSubKeyNames())
+                    {
+                        using (var device = media.OpenSubKey(name))
+                        {
+                            var hardwareIds = device == null ? null : device.GetValue("HardwareID") as string[];
+                            if (hardwareIds != null && Array.Exists(hardwareIds, h => string.Equals(h, CableHardwareId, StringComparison.OrdinalIgnoreCase)))
+                                ids.Add(@"ROOT\MEDIA\" + name);
+                        }
+                    }
+                }
+            }
+            catch { }
+            return ids;
+        }
     }
 
     public enum WatchdogAction { None, Start, Restart }

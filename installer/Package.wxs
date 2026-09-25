@@ -49,8 +49,13 @@
     <Property Id="SAVEDREMOVEVBCABLE" Secure="yes">
       <RegistrySearch Id="SavedRemoveVBCable" Root="HKLM" Key="Software\BeepTone" Name="RemoveVBCable" Type="raw" Bitness="always64" />
     </Property>
-    <SetProperty Id="REMOVEVBCABLE" Value="[SAVEDREMOVEVBCABLE]" After="AppSearch" Sequence="execute"
+    <SetProperty Id="REMOVEVBCABLE" Value="[SAVEDREMOVEVBCABLE]" After="AppSearch" Sequence="both"
                  Condition="NOT REMOVEVBCABLE AND SAVEDREMOVEVBCABLE" />
+
+    <!-- The wizard's VB-Cable page shows these two choices as checkboxes (see SetupUI.wxs). An unticked
+         checkbox empties its property, so the checkboxes have their own properties. -->
+    <SetProperty Id="INSTALLVBCABLEUI" Value="1" After="SetREMOVEVBCABLE" Sequence="ui" Condition="INSTALLVBCABLE &lt;&gt; &quot;0&quot;" />
+    <SetProperty Id="REMOVEVBCABLEUI" Value="1" After="SetREMOVEVBCABLE" Sequence="ui" Condition="REMOVEVBCABLE &lt;&gt; &quot;0&quot;" />
 
     <!-- Setup password: typed in the wizard, or SETUPPASSWORD=... on the command line. It is turned
          into SETUPPASSWORDHASH before costing, and only the hash is written. Left empty, an upgrade
@@ -170,16 +175,23 @@
     <SetProperty Id="InstallVBCable" Value="&quot;[INSTALLFOLDER]BeepToneCtl.exe&quot; install-cable-if-missing" Before="InstallVBCable" Sequence="execute" />
     <CustomAction Id="InstallVBCable" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
-    <!-- Remove VB-Cable on uninstall, after the tray apps have ended and before BeepToneCtl.exe is
-         removed. It never fails the uninstall; problems go to this log and the event log. -->
-    <SetProperty Id="UninstallVBCable" Value="&quot;[INSTALLFOLDER]BeepToneCtl.exe&quot; remove-cable" Before="UninstallVBCable" Sequence="execute" />
-    <CustomAction Id="UninstallVBCable" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <!-- On uninstall, ask whether to remove VB-Cable too (not asked in silent uninstalls). Then remove it
+         after the tray apps have ended and before BeepToneCtl.exe is removed, and ask for a restart
+         when Windows needs one to finish. It never fails the uninstall; problems go to this log and
+         the event log. -->
+    <CustomAction Id="AskRemoveVBCable" BinaryRef="BeepToneSetupCA" DllEntry="AskRemoveVBCable" Execute="immediate" Return="ignore" />
+    <SetProperty Id="UninstallVBCable" Value="[INSTALLFOLDER]BeepToneCtl.exe|[UILevel]|[REBOOT]" Before="UninstallVBCable" Sequence="execute" />
+    <CustomAction Id="UninstallVBCable" BinaryRef="BeepToneSetupCA" DllEntry="RemoveVBCable" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="CheckVBCableRestart" BinaryRef="BeepToneSetupCA" DllEntry="CheckVBCableRestart" Execute="immediate" Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="HashSetupPassword" Before="CostInitialize" Condition="SETUPPASSWORD" />
       <Custom Action="KillTrays" After="StopServices" />
+      <Custom Action="AskRemoveVBCable" Before="InstallValidate"
+              Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt; 2" />
       <Custom Action="UninstallVBCable" After="KillTrays"
               Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND REMOVEVBCABLE &lt;&gt; &quot;0&quot;" />
+      <Custom Action="CheckVBCableRestart" After="InstallFinalize" Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="PostInstall" After="WriteRegistryValues" Condition="NOT REMOVE" />
       <Custom Action="InstallVBCable" After="PostInstall" Condition="NOT REMOVE AND INSTALLVBCABLE &lt;&gt; &quot;0&quot;" />
     </InstallExecuteSequence>

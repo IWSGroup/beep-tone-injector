@@ -50,7 +50,7 @@ The PowerShell version made CABLE Output the Windows default microphone. If you 
 
 ## Install
 
-Download `BeepTone.msi` from the [latest release](https://github.com/IWSGroup/beep-tone-injector/releases/latest). It installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, and Install.
+Download `BeepTone.msi` from the [latest release](https://github.com/IWSGroup/beep-tone-injector/releases/latest). It installs for every user on the PC. Opened by hand, it walks through Welcome, **Setup password**, **Virtual cable**, and Install. The **Virtual cable** page has two boxes, both ticked: install VB-Cable if it is missing, and remove VB-Cable when Beep Tone is uninstalled.
 
 <p align="center">
   <img src="docs/images/installer-welcome.png" width="420" alt="Installer welcome page">
@@ -95,7 +95,7 @@ msiexec /i BeepTone.msi /qn LEVELDBFS=-30 INTERVALSECONDS=13 ALLOWPAUSE=0
 | `SETUPPASSWORDHASH` | `SetupPasswordHash` | A hash from `BeepToneCtl.exe new-password-hash`, so the password never appears in a command line |
 | `CABLEPACKURL` | `CablePackUrl` | Where to download VB-Cable from, for example an internal file share or web server |
 | `INSTALLVBCABLE` | (none) | 0 skips installing VB-Cable |
-| `REMOVEVBCABLE` | (none) | 0 keeps VB-Cable when Beep Tone is uninstalled. Remembered from install, and can also be given to the uninstall |
+| `REMOVEVBCABLE` | (none) | 0 keeps VB-Cable when Beep Tone is uninstalled. Remembered from install (the wizard's second box sets it too), and can also be given to the uninstall |
 
 Upgrades and reinstalls need no preparation. When the installer asks Beep Tone to close, every tray app closes at once, so there is no "files in use" prompt, wait, or restart. The installer then stops the guard, replaces the files, and starts the guard again, which brings the tray back for every signed-in user. There is deliberately no Exit on the tray; **Stop beep** turns the beep off.
 
@@ -112,7 +112,7 @@ The MSI is not code-signed. Deployment through Intune, SCCM or the methods above
 The MSI installs silently from any tool that can run `msiexec` as an administrator or as SYSTEM. It needs no user present and no restart. Exit code 0 means installed, 3010 means installed but a restart is pending, 1618 means another install was running (try again), and anything else is a failure; add `/l*v <file>` for a log.
 
 - **Intune**: add it as a Windows line-of-business app and put the properties in the command-line arguments, for example `LEVELDBFS=-30 SETUPPASSWORDHASH=pbkdf2-sha256$...`.
-- **Configuration Manager**: create an application with the install command `msiexec /i BeepTone.msi /qn /norestart` plus any properties, and the uninstall command `msiexec /x {product code} /qn`.
+- **Configuration Manager**: create an application with the install command `msiexec /i BeepTone.msi /qn /norestart` plus any properties, and the uninstall command `msiexec /x {product code} /qn /norestart`. Exit code 3010 from the uninstall means a restart finishes removing VB-Cable.
 - **Group Policy software installation**: assign the MSI to computers. It passes properties only through a transform (.mst) file, so it is simpler to set the tone and password with Group Policy Preferences registry items under `HKLM\Software\Policies\BeepTone` instead.
 - **PowerShell remoting**, from an administrator prompt. Copy the MSI to each PC first, because a remote session usually cannot read a network share (the Windows double-hop sign-in limit):
 
@@ -254,20 +254,24 @@ Run `BeepToneCtl.exe` from `C:\Program Files\BeepTone`:
 | `new-password-hash` | Makes a setup password hash for policy. |
 | `version` | Shows the installed version. |
 | `install-cable-if-missing` | From an administrator prompt: installs VB-Cable if it is missing, the same way the installer does. `--dry-run` downloads it and checks the signature without installing. |
-| `remove-cable` | From an administrator prompt: removes VB-Cable (its device, CABLE Input and CABLE Output, and its driver), the same way uninstalling does. `--dry-run` lists what it would remove. VoiceMeeter and VB-Cable A/B are not touched. |
+| `remove-cable` | From an administrator prompt: removes VB-Cable (its device, CABLE Input and CABLE Output, and its driver), the same way uninstalling does. `--dry-run` lists what it would remove. VoiceMeeter and VB-Cable A/B are not touched. Exits with 3010 when a restart finishes the removal. |
 
 ## Uninstall
 
 ```powershell
-msiexec /x BeepTone.msi /qn
+msiexec /x BeepTone.msi /qn /norestart
 ```
 
-This stops the guard, ends every tray app, and removes the files, the service, any policy values the MSI wrote, and VB-Cable. Windows then picks another default microphone; check that it is the headset, and check the softphone's microphone setting. Occasionally Windows finishes removing VB-Cable after the next restart. Upgrading to a newer Beep Tone never removes VB-Cable. Each user's settings and logs are left behind.
+This stops the guard, ends every tray app, and removes the files, the service, any policy values the MSI wrote, and VB-Cable. Windows then picks another default microphone; check that it is the headset, and check the softphone's microphone setting. Upgrading to a newer Beep Tone never removes VB-Cable. Each user's settings and logs are left behind.
 
-To keep VB-Cable, for example because other software uses it, pass `REMOVEVBCABLE=0` to the uninstall, or to the install so that uninstalling from Installed apps keeps it too:
+Uninstalling from **Installed apps** asks **Also remove VB-Cable?** when it is installed. **Yes** is the default unless the second box on the install wizard's **Virtual cable** page was unticked.
+
+When an app such as the softphone still has CABLE Output open, Windows finishes removing VB-Cable only at the next restart, and it still shows in Sound settings until then. The uninstaller then asks to restart. A silent uninstall never restarts the PC by itself: with `/norestart` it returns exit code 3010 so your deployment tool can schedule the restart, and without it the removal finishes at the next restart. Event 1602 in the Application log says when a restart is pending.
+
+To keep VB-Cable, for example because other software uses it, answer **No**, or pass `REMOVEVBCABLE=0` to the uninstall, or to the install so that uninstalling from Installed apps defaults to keeping it:
 
 ```powershell
-msiexec /x BeepTone.msi /qn REMOVEVBCABLE=0
+msiexec /x BeepTone.msi /qn /norestart REMOVEVBCABLE=0
 ```
 
 If CABLE Output is still the default microphone after VB-Cable is kept, set it back to the headset in Sound settings, because it is silent without the app.

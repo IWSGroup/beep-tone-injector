@@ -32,6 +32,7 @@ namespace BeepTone
                                  Administrator: download and install VB-Cable if it is not installed.
                                  --dry-run downloads and checks the signature only.
   remove-cable [--dry-run]       Administrator: remove VB-Cable, as uninstalling Beep Tone does.
+                                 Exits with 3010 when a restart finishes the removal.
                                  --dry-run lists what would be removed.
   new-password-hash              Make a setup password hash for the SetupPasswordHash policy value.
 ";
