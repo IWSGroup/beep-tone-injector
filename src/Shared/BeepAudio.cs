@@ -144,7 +144,29 @@ namespace BeepTone
             AudioEndpoint[] all = List("Render");
             AudioEndpoint match = Match(all, preferredId, preferredName);
             if (match != null) return match;
-            return Match(all, null, "CABLE Input");
+            return FindCable(all, true);
+        }
+
+        // VB-Cable's playback side (render) or recording side, whatever Windows named it, or null.
+        public static AudioEndpoint FindCable(AudioEndpoint[] all, bool render)
+        {
+            AudioEndpoint best = null;
+            int bestRank = int.MaxValue;
+            foreach (AudioEndpoint e in all)
+            {
+                int rank = VirtualDevices.CableRank(e.Name, render);
+                if (rank >= 0 && rank < bestRank)
+                {
+                    best = e;
+                    bestRank = rank;
+                }
+            }
+            return best;
+        }
+
+        public static AudioEndpoint FindCableInput()
+        {
+            return FindCable(List("Render"), true);
         }
 
         // The recording side of a virtual cable: "CABLE Input (...)" pairs with "CABLE Output (...)".
@@ -159,14 +181,14 @@ namespace BeepTone
                 foreach (AudioEndpoint e in captures)
                     if (string.Equals(NormalizeName(e.Name), wanted, StringComparison.OrdinalIgnoreCase)) return e;
             }
-            if (render.Name.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0)
-                return Match(captures, null, "CABLE Output");
+            if (VirtualDevices.CableRank(render.Name, true) >= 0 || render.Name.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0)
+                return FindCable(captures, false);
             return null;
         }
 
         public static AudioEndpoint FindCableOutput()
         {
-            return Match(List("Capture"), null, "CABLE Output");
+            return FindCable(List("Capture"), false);
         }
 
         public static void SetDefaultEndpoint(string deviceId, int role)

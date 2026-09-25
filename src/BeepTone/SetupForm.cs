@@ -278,9 +278,7 @@ namespace BeepTone
             AudioEndpoint[] outputs = AudioDevices.List("Render");
             micBox.Items.AddRange(mics);
             outBox.Items.AddRange(outputs);
-            bool cable = false;
-            foreach (AudioEndpoint e in outputs)
-                if (e.Name.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0) cable = true;
+            bool cable = AudioDevices.FindCable(outputs, true) != null;
             cableLabel.Text = cable ? "Virtual cable is installed." : "Virtual cable is not installed.";
             installButton.Visible = !cable;
             Select(micBox, mics, keepMic != null
@@ -288,7 +286,7 @@ namespace BeepTone
                 : AudioDevices.Match(mics, config.CaptureDeviceId, config.CaptureDeviceName));
             Select(outBox, outputs, keepOut != null
                 ? AudioDevices.Match(outputs, keepOut.Id, keepOut.Name)
-                : AudioDevices.Match(outputs, config.RenderDeviceId, config.RenderDeviceName) ?? AudioDevices.Match(outputs, null, "CABLE Input"));
+                : AudioDevices.Match(outputs, config.RenderDeviceId, config.RenderDeviceName) ?? AudioDevices.FindCable(outputs, true));
             SyncSave();
         }
 

@@ -55,8 +55,7 @@ namespace BeepTone
 
             for (int i = 0; i < 40; i++)
             {
-                foreach (AudioEndpoint e in AudioDevices.List("Render"))
-                    if (e.Name.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (AudioDevices.FindCableInput() != null) return true;
                 Application.DoEvents();
                 Thread.Sleep(500);
             }

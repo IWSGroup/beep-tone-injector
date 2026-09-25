@@ -99,13 +99,13 @@ namespace BeepTone
             return code;
         }
 
-        // CABLE Input as an audio device, or the VB-Audio driver itself (present even while the device is disabled).
+        // VB-Cable's playback side as an audio device, or the VB-Audio driver itself (present even while the device is disabled).
         public static string FindCable()
         {
             try
             {
-                foreach (AudioEndpoint e in AudioDevices.List("Render"))
-                    if (e.Name.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0) return e.Name;
+                AudioEndpoint cable = AudioDevices.FindCableInput();
+                if (cable != null) return cable.Name;
             }
             catch { }
             try

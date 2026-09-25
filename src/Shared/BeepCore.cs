@@ -169,6 +169,22 @@ namespace BeepTone
         {
             return !string.IsNullOrEmpty(name) && Pattern.IsMatch(name);
         }
+
+        static readonly System.Text.RegularExpressions.Regex SixteenChannels = new System.Text.RegularExpressions.Regex(
+            @"\b16 ?ch\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // How well an endpoint name fits VB-Cable's playback side (render) or recording side. VB-Cable
+        // names them "CABLE Input" and "CABLE Output (VB-Audio Virtual Cable)", but Windows can name them
+        // "Speakers" or "Microphone (VB-Audio Virtual Cable)" instead, and "CABLE In 16 Ch" is a second,
+        // 16-channel playback side. 0 is the usual name, 1 another name, 2 the 16-channel one, and -1 not
+        // VB-Cable. VB-Cable A/B and VoiceMeeter do not count.
+        public static int CableRank(string name, bool render)
+        {
+            if (string.IsNullOrEmpty(name)) return -1;
+            if (name.IndexOf(render ? "CABLE Input" : "CABLE Output", StringComparison.OrdinalIgnoreCase) >= 0) return 0;
+            if (name.IndexOf("(VB-Audio Virtual Cable)", StringComparison.OrdinalIgnoreCase) < 0) return -1;
+            return SixteenChannels.IsMatch(name) ? 2 : 1;
+        }
     }
 
     public enum WatchdogAction { None, Start, Restart }
@@ -1557,8 +1573,28 @@ namespace BeepTone
             };
             foreach (string name in virtualNames) if (!VirtualDevices.IsVirtualName(name)) errors.Add("missed " + name);
             foreach (string name in realNames) if (VirtualDevices.IsVirtualName(name)) errors.Add("wrongly matched " + name);
+            var ranks = new[]
+            {
+                Tuple.Create("CABLE Input (VB-Audio Virtual Cable)", true, 0),
+                Tuple.Create("Speakers (VB-Audio Virtual Cable)", true, 1),
+                Tuple.Create("CABLE In 16 Ch (VB-Audio Virtual Cable)", true, 2),
+                Tuple.Create("CABLE In 16ch (VB-Audio Virtual Cable)", true, 2),
+                Tuple.Create("CABLE-A Input (VB-Audio Cable A)", true, -1),
+                Tuple.Create("VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)", true, -1),
+                Tuple.Create("Speakers (HyperX Virtual Surround Sound)", true, -1),
+                Tuple.Create("CABLE Output (VB-Audio Virtual Cable)", false, 0),
+                Tuple.Create("Microphone (VB-Audio Virtual Cable)", false, 1),
+                Tuple.Create("CABLE-B Output (VB-Audio Cable B)", false, -1),
+                Tuple.Create("Headset Microphone (USB Audio Device)", false, -1)
+            };
+            foreach (var r in ranks)
+            {
+                int got = VirtualDevices.CableRank(r.Item1, r.Item2);
+                if (got != r.Item3) errors.Add((r.Item2 ? "playback " : "recording ") + r.Item1 + " ranked " + got + ", expected " + r.Item3);
+            }
             if (errors.Count > 0) return Fail(errors);
-            return virtualNames.Length + " virtual cables recognised; HyperX Virtual Surround Sound and " + (realNames.Length - 2) + " other real devices are not";
+            return virtualNames.Length + " virtual cables recognised; HyperX Virtual Surround Sound and " + (realNames.Length - 2)
+                + " other real devices are not; VB-Cable found under " + ranks.Length + " names, including Speakers (VB-Audio Virtual Cable)";
         }
 
         static string TestPassword()
