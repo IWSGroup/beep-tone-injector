@@ -76,18 +76,14 @@
                  Text="Without VB-Cable there is no beep. It is downloaded from VB-Audio (vb-audio.com) at the end of the install, and only installed when VB-Audio signed it." />
         <Control Id="InstallCable" Type="CheckBox" X="20" Y="100" Width="330" Height="17" Property="INSTALLVBCABLEUI" CheckBoxValue="1"
                  Text="&amp;Install VB-Cable if it is not installed yet" />
-        <Control Id="RemoveCable" Type="CheckBox" X="20" Y="122" Width="330" Height="17" Property="REMOVEVBCABLEUI" CheckBoxValue="1"
-                 Text="&amp;Remove VB-Cable when Beep Tone is uninstalled" />
-        <Control Id="Note" Type="Text" X="20" Y="150" Width="330" Height="48" NoPrefix="yes"
-                 Text="Untick the first box if you install VB-Cable yourself. Untick the second if other software on this PC uses VB-Cable. Uninstalling asks again before removing it." />
+        <Control Id="Note" Type="Text" X="20" Y="128" Width="330" Height="36" NoPrefix="yes"
+                 Text="Untick the box if you install VB-Cable yourself. VB-Cable is VB-Audio's own software under its own licence, so uninstalling Beep Tone leaves it installed." />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="SetupPasswordDlg" />
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
           <Publish Property="INSTALLVBCABLE" Value="1" Condition="INSTALLVBCABLEUI" />
           <Publish Property="INSTALLVBCABLE" Value="0" Condition="NOT INSTALLVBCABLEUI" />
-          <Publish Property="REMOVEVBCABLE" Value="1" Condition="REMOVEVBCABLEUI" />
-          <Publish Property="REMOVEVBCABLE" Value="0" Condition="NOT REMOVEVBCABLEUI" />
           <Publish Event="NewDialog" Value="VerifyReadyDlg" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">

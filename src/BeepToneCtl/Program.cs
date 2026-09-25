@@ -31,9 +31,6 @@ namespace BeepTone
   install-cable-if-missing [--dry-run]
                                  Administrator: download and install VB-Cable if it is not installed.
                                  --dry-run downloads and checks the signature only.
-  remove-cable [--dry-run]       Administrator: remove VB-Cable, as uninstalling Beep Tone does.
-                                 Exits with 3010 when a restart finishes the removal.
-                                 --dry-run lists what would be removed.
   new-password-hash              Make a setup password hash for the SetupPasswordHash policy value.
 ";
 
@@ -70,9 +67,6 @@ namespace BeepTone
                     case "install-cable-if-missing":
                         if (!Flag(args, "--dry-run") && !IsAdmin()) return Fail("Run this from an administrator command prompt.");
                         return CableInstall.InstallIfMissing(Flag(args, "--dry-run"));
-                    case "remove-cable":
-                        if (!Flag(args, "--dry-run") && !IsAdmin()) return Fail("Run this from an administrator command prompt.");
-                        return CableInstall.Remove(Flag(args, "--dry-run"));
                     case "install-cable":
                         if (args.Length < 3) return Fail("install-cable needs the package path and its SHA-256.");
                         return CableInstall.Run(args[1], args[2]);
