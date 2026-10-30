@@ -187,6 +187,141 @@ namespace BeepTone
         }
     }
 
+    // How the tray asks the guard service to let it quit: one line each way over a local named pipe.
+    // The password is base64 so any character survives; the pipe never leaves the PC.
+    public static class GuardProtocol
+    {
+        public const string PipeName = "BeepToneGuard";
+        public const int MaxMessageBytes = 4096;
+        public const string Ok = "ok";
+        public const string WrongPassword = "wrong-password";
+        public const string NotAllowed = "not-allowed";
+        public const string Locked = "locked";   // "locked <seconds>"
+        public const string Failed = "error";    // "error <reason>"
+
+        public static string QuitRequest(string password)
+        {
+            return "quit " + Convert.ToBase64String(Encoding.UTF8.GetBytes(password ?? ""));
+        }
+
+        public static bool TryParseQuit(string line, out string password)
+        {
+            password = null;
+            if (line == null || !line.StartsWith("quit ", StringComparison.Ordinal)) return false;
+            try
+            {
+                password = Encoding.UTF8.GetString(Convert.FromBase64String(line.Substring(5).Trim()));
+                return true;
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
+        public static void WriteLine(Stream stream, string line)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(line + "\n");
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
+        }
+
+        // One line, or null when nothing complete arrives in time or the other side hangs up.
+        public static string ReadLine(Stream stream, int timeoutMs)
+        {
+            var buffer = new byte[MaxMessageBytes];
+            int length = 0;
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            try
+            {
+                while (length < buffer.Length)
+                {
+                    IAsyncResult read = stream.BeginRead(buffer, length, buffer.Length - length, null, null);
+                    int wait = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                    if (!read.AsyncWaitHandle.WaitOne(wait)) return null;
+                    int count = stream.EndRead(read);
+                    if (count <= 0) return null;
+                    int newline = Array.IndexOf(buffer, (byte)'\n', length, count);
+                    length += count;
+                    if (newline >= 0) return Encoding.UTF8.GetString(buffer, 0, newline).TrimEnd('\r');
+                }
+            }
+            catch (IOException)
+            {
+            }
+            return null;
+        }
+    }
+
+    // Wrong setup passwords sent to the guard to quit: after 5 within 5 minutes it refuses for 5 minutes.
+    public sealed class QuitLockout
+    {
+        public const int MaxFailures = 5;
+        static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
+        static readonly TimeSpan LockFor = TimeSpan.FromMinutes(5);
+        readonly List<DateTime> failures = new List<DateTime>();
+        DateTime lockedUntilUtc = DateTime.MinValue;
+
+        public int SecondsLocked(DateTime nowUtc)
+        {
+            return nowUtc < lockedUntilUtc ? (int)Math.Ceiling((lockedUntilUtc - nowUtc).TotalSeconds) : 0;
+        }
+
+        // True when this failure starts a lockout.
+        public bool RecordFailure(DateTime nowUtc)
+        {
+            failures.RemoveAll(delegate (DateTime t) { return nowUtc - t > Window; });
+            failures.Add(nowUtc);
+            if (failures.Count < MaxFailures) return false;
+            failures.Clear();
+            lockedUntilUtc = nowUtc + LockFor;
+            return true;
+        }
+
+        public void Reset()
+        {
+            failures.Clear();
+            lockedUntilUtc = DateTime.MinValue;
+        }
+    }
+
+    // A tray quit with the setup password, kept by the guard for one Windows session. It belongs to one
+    // sign-in (this boot and the Windows logon ID), so it ends at sign-out or restart. The quitting tray
+    // started before QuitUtc, so only a tray started after it counts as Beep Tone being opened again.
+    public sealed class QuitMark
+    {
+        public string Boot = "";
+        public long LogonId;
+        public DateTime QuitUtc;
+        public int ProcessId;
+
+        public string Format()
+        {
+            return Boot + "|" + LogonId.ToString(CultureInfo.InvariantCulture) + "|"
+                + QuitUtc.Ticks.ToString(CultureInfo.InvariantCulture) + "|" + ProcessId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        public static QuitMark Parse(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            string[] parts = text.Split('|');
+            long logon, ticks;
+            int pid;
+            if (parts.Length != 4 || parts[0].Length == 0
+                || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out logon)
+                || !long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out ticks)
+                || ticks < DateTime.MinValue.Ticks || ticks > DateTime.MaxValue.Ticks
+                || !int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out pid))
+                return null;
+            return new QuitMark { Boot = parts[0], LogonId = logon, QuitUtc = new DateTime(ticks, DateTimeKind.Utc), ProcessId = pid };
+        }
+
+        public bool Matches(string boot, long logonId)
+        {
+            return Boot == boot && LogonId == logonId;
+        }
+    }
+
     public enum WatchdogAction { None, Start, Restart }
 
     // Shared by the per-user watchdog task and the machine guard service.
@@ -1017,6 +1152,10 @@ namespace BeepTone
     {
         const int Iterations = 100000;
 
+        // Hash of the built-in setup password. Override it with the policy value SetupPasswordHash;
+        // generate one with "BeepToneCtl.exe new-password-hash".
+        public const string DefaultHash = "pbkdf2-sha256$100000$zbkRYPHq7YSAzfS+0KLU2Q==$CSXX4taVfd4RXk83YDwKof6w14nm7DQrgIQi3a8GknA=";
+
         public static string Hash(string password)
         {
             var salt = new byte[16];
@@ -1065,6 +1204,8 @@ namespace BeepTone
         public const int PauseTampered = 1202;
         public const int UserStopped = 1203;
         public const int UserStarted = 1204;
+        public const int UserQuit = 1205;
+        public const int QuitLocked = 1206;
         public const int MicBypass = 1300;
         public const int MicBypassCleared = 1301;
         public const int SettingsSaved = 1400;
@@ -1123,6 +1264,7 @@ namespace BeepTone
             Run(lines, "settings limits", TestLimits);
             Run(lines, "password", TestPassword);
             Run(lines, "virtual devices", TestVirtualDevices);
+            Run(lines, "quit", TestQuit);
             return lines.ToArray();
         }
 
@@ -1595,6 +1737,50 @@ namespace BeepTone
             if (errors.Count > 0) return Fail(errors);
             return virtualNames.Length + " virtual cables recognised; HyperX Virtual Surround Sound and " + (realNames.Length - 2)
                 + " other real devices are not; VB-Cable found under " + ranks.Length + " names, including Speakers (VB-Audio Virtual Cable)";
+        }
+
+        static string TestQuit()
+        {
+            var errors = new List<string>();
+            string[] passwords = { "SuperSecretPassword!", "with spaces | and pipes", "Ünïcødé 密码", "" };
+            foreach (string p in passwords)
+            {
+                string back;
+                if (!GuardProtocol.TryParseQuit(GuardProtocol.QuitRequest(p), out back) || back != p) errors.Add("password did not survive: " + p);
+            }
+            string ignored;
+            foreach (string junk in new[] { null, "", "stop abc", "quit !!!not base64!!!", "QUIT YWJj" })
+                if (GuardProtocol.TryParseQuit(junk, out ignored)) errors.Add("accepted a bad request: " + (junk ?? "null"));
+
+            using (var stream = new MemoryStream(Encoding.UTF8.GetBytes("quit YWJj\r\nextra")))
+                if (GuardProtocol.ReadLine(stream, 1000) != "quit YWJj") errors.Add("ReadLine did not return the first line");
+            using (var stream = new MemoryStream(Encoding.UTF8.GetBytes("no newline")))
+                if (GuardProtocol.ReadLine(stream, 1000) != null) errors.Add("ReadLine returned a line without a newline");
+
+            var lockout = new QuitLockout();
+            DateTime t0 = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+            for (int i = 0; i < QuitLockout.MaxFailures - 1; i++)
+                if (lockout.RecordFailure(t0.AddSeconds(i))) errors.Add("locked after only " + (i + 1) + " failures");
+            if (lockout.SecondsLocked(t0.AddSeconds(10)) != 0) errors.Add("locked before the fifth failure");
+            if (!lockout.RecordFailure(t0.AddSeconds(20))) errors.Add("the fifth failure did not lock");
+            int locked = lockout.SecondsLocked(t0.AddSeconds(20));
+            if (locked < 299 || locked > 300) errors.Add("locked for " + locked + " s, expected 300");
+            if (lockout.SecondsLocked(t0.AddSeconds(20 + 301)) != 0) errors.Add("still locked after 5 minutes");
+            var spread = new QuitLockout();
+            for (int i = 0; i < 10; i++)
+                if (spread.RecordFailure(t0.AddMinutes(i * 2))) errors.Add("failures 2 minutes apart locked");
+
+            var mark = new QuitMark { Boot = "62", LogonId = 123456789012, QuitUtc = t0, ProcessId = 4321 };
+            QuitMark read = QuitMark.Parse(mark.Format());
+            if (read == null || read.Boot != "62" || read.LogonId != mark.LogonId || read.QuitUtc != t0 || read.ProcessId != 4321)
+                errors.Add("quit mark did not survive a round trip");
+            if (read != null && (!read.Matches("62", 123456789012) || read.Matches("63", 123456789012) || read.Matches("62", 1)))
+                errors.Add("quit mark matched the wrong sign-in");
+            foreach (string junk in new[] { null, "", "62|x|1|2", "|1|2|3", "62|1|2", "62|1|99999999999999999999|2" })
+                if (QuitMark.Parse(junk) != null) errors.Add("parsed a bad quit mark: " + (junk ?? "null"));
+
+            if (errors.Count > 0) return Fail(errors);
+            return passwords.Length + " passwords survive the pipe message, bad requests are refused, 5 wrong passwords lock for 5 minutes, quit marks match only their sign-in";
         }
 
         static string TestPassword()

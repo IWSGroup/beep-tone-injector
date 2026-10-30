@@ -27,6 +27,7 @@ namespace BeepTone
         readonly Icon stoppedIcon;
         readonly ToolStripItem beepItem;
         readonly ToolStripMenuItem stopItem;
+        readonly ToolStripMenuItem quitItem;
         readonly InstallerCloseWindow installerClose;
         readonly Timer timer;
         readonly Timer flashTimer;
@@ -74,6 +75,9 @@ namespace BeepTone
             menu.Items.Add("Open readme", null, delegate { OpenReadme(); });
             menu.Items.Add("Open log", null, delegate { OpenLog(); });
             menu.Items.Add(new ToolStripSeparator());
+            quitItem = new ToolStripMenuItem("Quit Beep Tone...") { Visible = BeepPolicy.AllowQuit };
+            quitItem.Click += delegate { QuitFromMenu(); };
+            menu.Items.Add(quitItem);
             menu.Items.Add(new ToolStripMenuItem("Beep Tone " + BeepPaths.Version) { Enabled = false });
             pauseItem.Click += delegate { TogglePause(); };
 
@@ -319,6 +323,46 @@ namespace BeepTone
                 BeepFiles.Log("could not start BeepToneCtl.exe: " + ex.Message);
                 MessageBox.Show("An administrator can turn the beep on with:\r\nBeepToneCtl.exe start", "Beep Tone");
             }
+        }
+
+        // Closes the tray until sign-out, a restart, or Beep Tone is opened from the Start menu. The guard
+        // service checks the setup password as well and stops restarting the tray for this sign-in, so
+        // only someone with the password can do it.
+        void QuitFromMenu()
+        {
+            if (!BeepPolicy.AllowQuit) return;
+            string password;
+            using (var form = new PasswordForm("Enter the setup password to quit Beep Tone."))
+            {
+                if (form.ShowDialog() != DialogResult.OK) return;
+                password = form.Password;
+            }
+            string reply;
+            try
+            {
+                reply = GuardClient.RequestQuit(password);
+            }
+            catch (Exception ex)
+            {
+                BeepFiles.Log("could not quit: " + ex.Message);
+                MessageBox.Show(ex.Message, "Beep Tone");
+                return;
+            }
+            if (reply == null)
+            {
+                BeepFiles.Log("the guard service is not running, so nothing will start the tray again");
+            }
+            else if (reply != GuardProtocol.Ok)
+            {
+                BeepFiles.Log("could not quit: the guard service answered " + (reply.StartsWith(GuardProtocol.Failed, StringComparison.Ordinal) ? reply : reply.Split(' ')[0]));
+                MessageBox.Show(GuardClient.Describe(reply), "Beep Tone");
+                return;
+            }
+            BeepFiles.Log("quit from the tray menu with the setup password");
+            BeepEvents.Write(BeepEvents.UserQuit, "Beep Tone was quit from the tray menu with the setup password. There is no beep until the "
+                + "next sign-in, a restart, or Beep Tone is opened from the Start menu.", true);
+            StopMixer();
+            ExitThread();
         }
 
         void StopFromMenu()
@@ -574,6 +618,7 @@ namespace BeepTone
                 pauseItem.Text = PauseLabel();
                 pauseItem.Visible = BeepPolicy.AllowPause;
                 stopItem.Visible = BeepPolicy.AllowStop;
+                quitItem.Visible = BeepPolicy.AllowQuit;
                 if (alert != null && alert.Banner) ShowBanner(alert.Text, false);
                 else ClearBanner();
                 if (alert != null) notify.Text = Clip(alert.Text);

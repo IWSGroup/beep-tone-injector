@@ -17,6 +17,7 @@ namespace BeepTone
         readonly ManualResetEvent stop = new ManualResetEvent(false);
         readonly AutoResetEvent wake = new AutoResetEvent(false);
         Thread worker;
+        QuitServer quitServer;
 
         public GuardService()
         {
@@ -27,6 +28,8 @@ namespace BeepTone
 
         protected override void OnStart(string[] args)
         {
+            quitServer = new QuitServer(stop);
+            quitServer.Start();
             worker = new Thread(Run);
             worker.IsBackground = true;
             worker.Start();
@@ -36,6 +39,7 @@ namespace BeepTone
         {
             stop.Set();
             if (worker != null) worker.Join(5000);
+            if (quitServer != null) quitServer.Join(2000);
         }
 
         protected override void OnSessionChange(SessionChangeDescription change)
@@ -79,6 +83,7 @@ namespace BeepTone
         {
             TrayPath = trayPath;
             this.dryRun = dryRun;
+            if (!dryRun) QuitMarks.ClearOtherBoots();
         }
 
         public static string DefaultTrayPath()
@@ -113,6 +118,8 @@ namespace BeepTone
                 state = new SessionState();
                 sessions[sessionId] = state;
             }
+            string quit = CheckQuit(sessionId, token);
+            if (quit != null) return "session " + sessionId + ": " + quit;
             string local = Native.LocalAppData(token);
             if (string.IsNullOrEmpty(local)) return "session " + sessionId + ": profile is not loaded yet";
             string heartbeatPath = Path.Combine(Path.Combine(local, "BeepTone"), "heartbeat.txt");
@@ -166,6 +173,33 @@ namespace BeepTone
             state.SuspectSinceUtc = DateTime.MinValue;
             BeepEvents.Write(BeepEvents.GuardLaunched, "Started the beep tray app in session " + sessionId + ": " + reason, false);
             return prefix + reason + "; started the tray app";
+        }
+
+        // A tray quit with the setup password is left alone until sign-out, a restart, or Beep Tone is opened
+        // again: a BeepTone.exe in the session that started after the quit. Returns null to supervise as usual.
+        string CheckQuit(int sessionId, IntPtr token)
+        {
+            QuitMark quit = QuitMarks.Get(sessionId);
+            if (quit == null) return null;
+            // guard-check runs as the user, without the session token, so it cannot compare the sign-in.
+            if (quit.Boot != QuitMarks.BootStamp() || (!dryRun && quit.LogonId != Native.LogonId(token)))
+            {
+                if (!dryRun) QuitMarks.Clear(sessionId);
+                return null;
+            }
+            foreach (Process p in Process.GetProcessesByName("BeepTone"))
+            {
+                try
+                {
+                    if (p.SessionId != sessionId || p.StartTime.ToUniversalTime() <= quit.QuitUtc) continue;
+                    if (!dryRun) QuitMarks.Clear(sessionId);
+                    return null;
+                }
+                catch { }
+            }
+            return "Beep Tone was quit with the setup password at "
+                + quit.QuitUtc.ToLocalTime().ToString("h:mm tt", System.Globalization.CultureInfo.CurrentCulture)
+                + "; it starts again at the next sign-in, a restart, or from the Start menu";
         }
 
         // Only BeepTone.exe in the same session counts, so a heartbeat file the user edited
@@ -233,6 +267,27 @@ namespace BeepTone
 
         [DllImport("kernel32.dll")]
         public static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returned);
+
+        // The Windows logon ID of a token (TOKEN_STATISTICS.AuthenticationId), new at every sign-in.
+        public static long LogonId(IntPtr token)
+        {
+            const int TokenStatistics = 10;
+            IntPtr buffer = Marshal.AllocHGlobal(64);
+            try
+            {
+                int returned;
+                if (!GetTokenInformation(token, TokenStatistics, buffer, 64, out returned))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "could not read the sign-in");
+                return Marshal.ReadInt64(buffer, 8);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
 
         [DllImport("userenv.dll", SetLastError = true)]
         static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);

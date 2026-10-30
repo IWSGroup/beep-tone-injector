@@ -5,9 +5,8 @@ namespace BeepTone
 {
     sealed class PasswordForm : Form
     {
-        // PBKDF2 hash of the setup password. Override it with the policy value SetupPasswordHash;
-        // generate one with "BeepToneCtl.exe new-password-hash".
-        const string DefaultPasswordHash = "pbkdf2-sha256$100000$zbkRYPHq7YSAzfS+0KLU2Q==$CSXX4taVfd4RXk83YDwKof6w14nm7DQrgIQi3a8GknA=";
+        // The password typed, once it was accepted.
+        public string Password { get; private set; }
 
         public PasswordForm() : this("Enter the setup password.") { }
 
@@ -31,9 +30,9 @@ namespace BeepTone
             CancelButton = cancel;
             ok.Click += delegate
             {
-                string hash = BeepPolicy.GetString("SetupPasswordHash", DefaultPasswordHash);
-                if (SetupPassword.Verify(box.Text, hash))
+                if (SetupPassword.Verify(box.Text, BeepPolicy.SetupPasswordHash))
                 {
+                    Password = box.Text;
                     DialogResult = DialogResult.OK;
                     Close();
                     return;

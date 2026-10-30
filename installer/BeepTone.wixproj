@@ -5,6 +5,9 @@
     <InstallerPlatform>x64</InstallerPlatform>
     <ProductVersion>$(Version)</ProductVersion>
     <DefineConstants>ProductVersion=$(ProductVersion)</DefineConstants>
+    <!-- ICE43 and ICE57 treat the Start menu shortcut as per-user, but this package always installs per
+         machine (Scope="perMachine"), where the Start menu folder is the all-users one. -->
+    <SuppressIces>ICE43;ICE57</SuppressIces>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />

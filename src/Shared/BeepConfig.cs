@@ -107,6 +107,8 @@ namespace BeepTone
 
         public static bool AllowPause { get { return GetNumber("AllowPause", 1) != 0; } }
         public static bool AllowStop { get { return GetNumber("AllowStop", 1) != 0; } }
+        public static bool AllowQuit { get { return GetNumber("AllowQuit", 1) != 0; } }
+        public static string SetupPasswordHash { get { return GetString("SetupPasswordHash", SetupPassword.DefaultHash); } }
 
         public static int PauseMinutes
         {
@@ -159,6 +161,83 @@ namespace BeepTone
             using (RegistryKey key = Registry.LocalMachine.CreateSubKey(Key))
                 key.SetValue("Disabled", disabled ? 1 : 0, RegistryValueKind.DWord);
         }
+    }
+
+    // Quits from the tray, one value per Windows session under HKLM\Software\BeepTone\Quit. Only
+    // administrators and SYSTEM can change it, so a user cannot quit the beep without the password.
+    // Kept in the registry so a quit survives the guard restarting during an upgrade.
+    public static class QuitMarks
+    {
+        public const string Key = @"Software\BeepTone\Quit";
+
+        public static QuitMark Get(int sessionId)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(Key))
+                    return key == null ? null : QuitMark.Parse(key.GetValue(Name(sessionId)) as string);
+            }
+            catch { return null; }
+        }
+
+        public static void Set(int sessionId, QuitMark mark)
+        {
+            using (RegistryKey key = Registry.LocalMachine.CreateSubKey(Key))
+                key.SetValue(Name(sessionId), mark.Format(), RegistryValueKind.String);
+        }
+
+        public static void Clear(int sessionId)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(Key, true))
+                    if (key != null) key.DeleteValue(Name(sessionId), false);
+            }
+            catch { }
+        }
+
+        // Removes quits from earlier boots.
+        public static void ClearOtherBoots()
+        {
+            try
+            {
+                string boot = BootStamp();
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(Key, true))
+                {
+                    if (key == null) return;
+                    foreach (string name in key.GetValueNames())
+                    {
+                        QuitMark mark = QuitMark.Parse(key.GetValue(name) as string);
+                        if (mark == null || mark.Boot != boot) key.DeleteValue(name, false);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // Windows counts boots in BootId. Without it, the boot time to the nearest 10 minutes.
+        public static string BootStamp()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"))
+                {
+                    object id = key == null ? null : key.GetValue("BootId");
+                    if (id != null) return Convert.ToInt64(id, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
+                }
+            }
+            catch { }
+            long bootTicks = DateTime.UtcNow.Ticks - (long)GetTickCount64() * TimeSpan.TicksPerMillisecond;
+            return "t" + (bootTicks / TimeSpan.FromMinutes(10).Ticks).ToString(CultureInfo.InvariantCulture);
+        }
+
+        static string Name(int sessionId)
+        {
+            return sessionId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        static extern ulong GetTickCount64();
     }
 
     public sealed class BeepConfig

@@ -90,13 +90,14 @@ msiexec /i BeepTone.msi /qn LEVELDBFS=-30 INTERVALSECONDS=13 ALLOWPAUSE=0
 | `ALLOWPAUSE` | `AllowPause` | 0 removes the pause option |
 | `PAUSEMINUTES` | `PauseMinutes` | 1-60 |
 | `ALLOWSTOP` | `AllowStop` | 0 removes **Stop beep** from the tray |
+| `ALLOWQUIT` | `AllowQuit` | 0 removes **Quit Beep Tone** from the tray |
 | `IGNOREDMICAPPS` | `IgnoredMicApps` | Comma-separated apps allowed to use the physical microphone |
 | `SETUPPASSWORD` | `SetupPasswordHash` | A new setup password. The installer stores only its hash |
 | `SETUPPASSWORDHASH` | `SetupPasswordHash` | A hash from `BeepToneCtl.exe new-password-hash`, so the password never appears in a command line |
 | `CABLEPACKURL` | `CablePackUrl` | Where to download VB-Cable from, for example an internal file share or web server |
 | `INSTALLVBCABLE` | (none) | 0 skips installing VB-Cable (the same as unticking the wizard's box) |
 
-Upgrades and reinstalls need no preparation. When the installer asks Beep Tone to close, every tray app closes at once, so there is no "files in use" prompt, wait, or restart. The installer then stops the guard, replaces the files, and starts the guard again, which brings the tray back for every signed-in user. There is deliberately no Exit on the tray; **Stop beep** turns the beep off.
+Upgrades and reinstalls need no preparation. When the installer asks Beep Tone to close, every tray app closes at once, so there is no "files in use" prompt, wait, or restart. The installer then stops the guard, replaces the files, and starts the guard again, which brings the tray back for every signed-in user. The tray has no plain Exit: **Stop beep** turns the beep off, and **Quit Beep Tone** closes it with the setup password (see Tray).
 
 Pass the same properties again when installing a newer version, because an upgrade replaces them. The setup password is the exception: an upgrade keeps the current one unless a new one is given.
 
@@ -175,11 +176,13 @@ Any other softphone needs the same thing. Turn off noise removal, noise suppress
 
 The icon has no Quit. It turns amber for a moment each time a beep is sent, red while the beep is not going out or is paused, and grey while an administrator has the beep stopped. A red banner at the top of the screen says what is wrong. It does not take focus, can be hidden for 2 minutes, and appears even when Windows notifications are silenced. A notification also names the problem and repeats about every two minutes until the beep returns.
 
-The menu shows the status, which apps are using the cable, **Beep now**, **Pause beep for 15 minutes**, **Stop beep**, **Hear beep on this PC**, **Setup**, **Open readme**, and **Open log**, then the installed version. The setup window's title shows the version too. **Setup** opens for anyone and asks for the password only when saving a change.
+The menu shows the status, which apps are using the cable, **Beep now**, **Pause beep for 15 minutes**, **Stop beep**, **Hear beep on this PC**, **Setup**, **Open readme**, **Open log**, and **Quit Beep Tone**, then the installed version. The setup window's title shows the version too. **Setup** opens for anyone and asks for the password only when saving a change.
 
 **Pause beep for 15 minutes** stops only the tone. The microphone keeps working. The icon stays red and an amber banner shows when the beep will return. After 15 minutes the beep turns itself back on with a beep. **Turn beep on** ends the pause sooner. No password is required. Policy can change the length or turn pausing off. Every pause is logged. A pause file edited to last longer than one pause is removed and reported.
 
 **Stop beep** asks for the setup password, then turns the beep off and closes the microphone until someone chooses **Start beep**, which needs no password. The stop is kept only while the tray runs, so it also ends at sign-out or restart, and it cannot be set by editing a file. The icon turns grey and an amber banner shows while it is stopped. Every stop and start goes to the event log. Policy `AllowStop` = 0 removes the option.
+
+**Quit Beep Tone** asks for the setup password, then closes the tray completely, with no beep, until the next sign-in, a restart, or someone opens **Beep Tone** from the Start menu, which needs no password. The guard service checks the password too and only then stops restarting the tray for that sign-in, so ending the tray or editing its files does not get rid of the beep. After 5 wrong passwords in 5 minutes, quitting is refused for 5 minutes. A quit survives a Beep Tone upgrade. Every quit goes to the event log, and `BeepToneCtl.exe guard-check` shows it. Policy `AllowQuit` = 0 removes the option.
 
 While an administrator has the beep stopped, the menu shows **Turn beep on (administrator)...** instead of **Stop beep**. It runs `BeepToneCtl.exe start` behind the Windows approval prompt, so only an administrator can use it.
 
@@ -226,6 +229,7 @@ Values under `HKLM\Software\Policies\BeepTone` override setup and are greyed out
 | `AllowPause` | 0 removes the pause option |
 | `PauseMinutes` | Pause length, 1-60 minutes |
 | `AllowStop` | 0 removes **Stop beep** from the tray |
+| `AllowQuit` | 0 removes **Quit Beep Tone** from the tray |
 | `IgnoredMicApps` | Apps allowed to use the physical microphone, for example `SpeechRuntime.exe` |
 | `SetupPasswordHash` | Setup password hash from `BeepToneCtl.exe new-password-hash` |
 | `CablePackUrl` | VB-Cable package the installer and the Setup button download |
@@ -285,6 +289,8 @@ Events also go to the Windows Application log under source `BeepTone`, so they c
 | 1200, 1201 | Paused, pause ended |
 | 1202 | Pause file edited to last longer than one pause |
 | 1203, 1204 | Stopped with **Stop beep**, started with **Start beep** |
+| 1205 | Quit with **Quit Beep Tone** |
+| 1206 | 5 wrong passwords to quit; quitting refused for 5 minutes |
 | 1300, 1301 | An app is using the physical microphone directly, cleared |
 | 1400 | Settings saved |
 | 1500, 1501, 1502 | Guard started, restarted, or is backing off from the tray app |

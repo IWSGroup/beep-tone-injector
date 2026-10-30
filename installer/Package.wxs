@@ -35,6 +35,7 @@
     <Property Id="ALLOWPAUSE" Secure="yes" />
     <Property Id="PAUSEMINUTES" Secure="yes" />
     <Property Id="ALLOWSTOP" Secure="yes" />
+    <Property Id="ALLOWQUIT" Secure="yes" />
     <Property Id="IGNOREDMICAPPS" Secure="yes" />
     <Property Id="SETUPPASSWORDHASH" Secure="yes" Hidden="yes" />
     <Property Id="CABLEPACKURL" Secure="yes" />
@@ -60,6 +61,7 @@
 
     <UIRef Id="BeepToneUI" />
 
+    <StandardDirectory Id="ProgramMenuFolder" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="BeepTone">
         <Directory Id="CABLEFOLDER" Name="VBCABLE" />
@@ -73,7 +75,11 @@
 
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
       <Component>
-        <File Id="TrayExe" Source="$(var.BeepTone.TargetPath)" KeyPath="yes" />
+        <File Id="TrayExe" Source="$(var.BeepTone.TargetPath)" KeyPath="yes">
+          <!-- Opens Beep Tone again after Quit Beep Tone, without signing out. -->
+          <Shortcut Id="TrayShortcut" Directory="ProgramMenuFolder" Name="Beep Tone" Description="Start the call recording beep"
+                    WorkingDirectory="INSTALLFOLDER" Icon="BeepTone.ico" Advertise="no" />
+        </File>
       </Component>
       <Component>
         <File Id="TrayConfig" Source="$(var.BeepTone.TargetPath).config" KeyPath="yes" />
@@ -133,6 +139,9 @@
       </Component>
       <Component Id="PolicyAllowStop" Condition="ALLOWSTOP">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="AllowStop" Value="[ALLOWSTOP]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyAllowQuit" Condition="ALLOWQUIT">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="AllowQuit" Value="[ALLOWQUIT]" Type="string" KeyPath="yes" />
       </Component>
       <Component Id="PolicyIgnoredApps" Condition="IGNOREDMICAPPS">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="IgnoredMicApps" Value="[IGNOREDMICAPPS]" Type="string" KeyPath="yes" />
