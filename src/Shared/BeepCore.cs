@@ -94,6 +94,8 @@ namespace BeepTone
     public static class HeartbeatState
     {
         public const string Running = "running";
+        // No app on the beep list is using the cable, so no call needs the beep.
+        public const string Waiting = "waiting";
         public const string Paused = "paused";
         public const string Reconnecting = "reconnecting";
         public const string Setup = "setup";
@@ -184,6 +186,65 @@ namespace BeepTone
             if (name.IndexOf(render ? "CABLE Input" : "CABLE Output", StringComparison.OrdinalIgnoreCase) >= 0) return 0;
             if (name.IndexOf("(VB-Audio Virtual Cable)", StringComparison.OrdinalIgnoreCase) < 0) return -1;
             return SixteenChannels.IsMatch(name) ? 2 : 1;
+        }
+    }
+
+    // The apps whose calls get the beep, from policy BeepApps; Webex when it is not set. The beep plays
+    // only while one of them is recording from the cable, so a Zoom or Teams call between colleagues
+    // has none. An entry matches an app whose program file, description or product name contains it,
+    // ignoring case, so "Webex" matches "Cisco Webex Meetings" and "CiscoWebexStart.exe". "*" is every app.
+    public static class BeepAppList
+    {
+        public const string Default = "Webex";
+        public const string Everything = "*";
+
+        // Trims ".exe" and drops blanks and repeats.
+        public static string[] Clean(string[] entries)
+        {
+            var items = new List<string>();
+            foreach (string entry in entries ?? new string[0])
+            {
+                string item = (entry ?? "").Trim();
+                if (item.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) item = item.Substring(0, item.Length - 4).Trim();
+                if (item.Length == 0) continue;
+                bool seen = false;
+                foreach (string have in items) if (string.Equals(have, item, StringComparison.OrdinalIgnoreCase)) seen = true;
+                if (!seen) items.Add(item);
+            }
+            return items.ToArray();
+        }
+
+        // An empty list beeps for every app too, so a broken setting fails toward the beep.
+        public static bool IsEverything(string[] list)
+        {
+            if (list == null || list.Length == 0) return true;
+            foreach (string item in list) if (item == Everything) return true;
+            return false;
+        }
+
+        public static bool Matches(string[] list, string exe, string description, string product)
+        {
+            if (IsEverything(list)) return true;
+            string file = exe ?? "";
+            if (file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) file = file.Substring(0, file.Length - 4);
+            foreach (string item in list)
+            {
+                if (Contains(file, item) || Contains(description, item) || Contains(product, item)) return true;
+            }
+            return false;
+        }
+
+        static bool Contains(string text, string item)
+        {
+            return !string.IsNullOrEmpty(text) && text.IndexOf(item, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // "Webex", "Webex or Five9", "Webex, Five9 or Genesys"; empty for every app.
+        public static string Describe(string[] list)
+        {
+            if (IsEverything(list)) return "";
+            if (list.Length == 1) return list[0];
+            return string.Join(", ", list, 0, list.Length - 1) + " or " + list[list.Length - 1];
         }
     }
 
@@ -366,7 +427,8 @@ namespace BeepTone
             }
             if (heartbeat.State != HeartbeatState.Running)
             {
-                // Paused, reconnecting to a missing device, or waiting for setup: a restart cannot help.
+                // Paused, waiting for a call, reconnecting to a missing device, or waiting for setup: a
+                // restart cannot help.
                 reason = "mixer reports " + heartbeat.State;
                 return WatchdogAction.None;
             }
@@ -477,8 +539,8 @@ namespace BeepTone
         }
     }
 
-    // Decides when the tone plays. A beep that has started always finishes, so a pause
-    // or "Beep now" never cuts the tone off mid-wave.
+    // Decides when the tone plays. A beep that has started always finishes, so a pause, the end
+    // of a call, or "Test beep" never cuts the tone off mid-wave.
     public sealed class BeepScheduler
     {
         readonly float[] beep;
@@ -486,7 +548,7 @@ namespace BeepTone
         long position;
         long nextBeep;
         int beepPos = -1;
-        bool wasPaused;
+        bool wasHeld;
 
         public BeepScheduler(float[] scaledBeep, long intervalFrames)
         {
@@ -498,28 +560,31 @@ namespace BeepTone
         public bool InBeep { get { return beepPos >= 0; } }
 
         // Adds the tone into buffer[0..count). Returns the index where a beep started, or -1.
-        public int Mix(float[] buffer, int count, bool paused, bool force)
+        // paused: the agent paused the beep. waiting: no app on the beep list is using the cable.
+        // Either one holds the schedule, and the first beep after it plays at once. force (a test
+        // beep) plays one beep now and restarts the schedule from it, unless paused.
+        public int Mix(float[] buffer, int count, bool paused, bool waiting, bool force)
         {
             int started = -1;
-            if (paused)
+            bool hold = paused || waiting;
+            if (hold)
             {
-                wasPaused = true;
+                wasHeld = true;
             }
-            else
+            else if (wasHeld)
             {
-                if (wasPaused)
-                {
-                    wasPaused = false;
-                    nextBeep = position;
-                }
-                if (force && beepPos < 0) nextBeep = position;
+                wasHeld = false;
+                nextBeep = position;
             }
+            bool forced = force && !paused && beepPos < 0;
+            if (forced) nextBeep = position;
             for (int i = 0; i < count; i++)
             {
-                if (beepPos < 0 && !paused && position >= nextBeep)
+                if (beepPos < 0 && (forced || !hold) && position >= nextBeep)
                 {
                     beepPos = 0;
                     nextBeep = position + interval;
+                    forced = false;
                     if (started < 0) started = i;
                 }
                 if (beepPos >= 0)
@@ -1255,6 +1320,7 @@ namespace BeepTone
             var lines = new List<string>();
             Run(lines, "tone shape", TestSynth);
             Run(lines, "tone schedule", TestScheduler);
+            Run(lines, "beep apps", TestBeepApps);
             Run(lines, "clock drift", TestDrift);
             Run(lines, "microphone stall", TestStall);
             Run(lines, "tone detection", TestDetector);
@@ -1317,7 +1383,9 @@ namespace BeepTone
             return beep.Length + " samples, 200.0 ms, " + hz.ToString("0.0", CultureInfo.InvariantCulture) + " Hz, level -20 dBFS";
         }
 
-        static List<long> RunSchedule(BeepScheduler s, int rate, int seconds, int pauseFrom, int pauseTo, int forceAt)
+        // Times are in seconds; -1 leaves that part out. Waiting is before callFrom and from callTo on.
+        static List<long> RunSchedule(BeepScheduler s, int rate, int seconds, int pauseFrom, int pauseTo, int forceAt,
+            int callFrom = -1, int callTo = -1)
         {
             var starts = new List<long>();
             var buffer = new float[480];
@@ -1327,11 +1395,12 @@ namespace BeepTone
             {
                 double t = s.Position / (double)rate;
                 bool paused = t >= pauseFrom && t < pauseTo;
+                bool waiting = callFrom >= 0 && (t < callFrom || (callTo >= 0 && t >= callTo));
                 bool force = !forced && forceAt >= 0 && t >= forceAt;
                 if (force) forced = true;
                 Array.Clear(buffer, 0, buffer.Length);
                 long before = s.Position;
-                int at = s.Mix(buffer, buffer.Length, paused, force);
+                int at = s.Mix(buffer, buffer.Length, paused, waiting, force);
                 if (at >= 0) starts.Add(before + at);
             }
             return starts;
@@ -1350,15 +1419,58 @@ namespace BeepTone
             if (got != "0,13,30,43,56") errors.Add("pause schedule " + got);
             var forced = RunSchedule(new BeepScheduler(beep, 13L * rate), rate, 30, -1, -1, 5);
             got = Seconds(forced, rate);
-            if (got != "0,5,18") errors.Add("beep now schedule " + got);
-            // "Beep now" during a beep must not restart it.
+            if (got != "0,5,18") errors.Add("test beep schedule " + got);
+            // No beep until a listed app uses the cable, one at once when it does, none after it stops.
+            var call = RunSchedule(new BeepScheduler(beep, 13L * rate), rate, 80, -1, -1, -1, 20, 50);
+            got = Seconds(call, rate);
+            if (got != "20,33,46") errors.Add("call schedule " + got);
+            // A test beep plays while waiting for a call, but not while paused.
+            var waitingTest = RunSchedule(new BeepScheduler(beep, 13L * rate), rate, 40, -1, -1, 5, 20, -1);
+            got = Seconds(waitingTest, rate);
+            if (got != "5,20,33") errors.Add("test beep while waiting " + got);
+            var pausedTest = RunSchedule(new BeepScheduler(beep, 13L * rate), rate, 30, 1, 20, 5);
+            got = Seconds(pausedTest, rate);
+            if (got != "0,20") errors.Add("test beep while paused " + got);
+            // A test beep during a beep must not restart it.
             var s = new BeepScheduler(beep, 13L * rate);
             var buf = new float[480];
-            s.Mix(buf, buf.Length, false, false);
-            int again = s.Mix(buf, buf.Length, false, true);
-            if (again >= 0) errors.Add("beep now restarted a beep in progress");
+            s.Mix(buf, buf.Length, false, false, false);
+            int again = s.Mix(buf, buf.Length, false, false, true);
+            if (again >= 0) errors.Add("test beep restarted a beep in progress");
             if (errors.Count > 0) return Fail(errors);
-            return "every 13 s, pause resumes with a beep, beep now resets the schedule";
+            return "every 13 s, pause resumes with a beep, none outside a call and one as it starts, test beep resets the schedule";
+        }
+
+        static string TestBeepApps()
+        {
+            var errors = new List<string>();
+            string[] webex = { BeepAppList.Default };
+            var beeps = new[]
+            {
+                new[] { "CiscoCollabHost.exe", "Webex", "Webex" },
+                new[] { "atmgr.exe", "Cisco Webex Meetings", "Cisco Webex Meetings" },
+                new[] { "CiscoWebexStart.exe", "", "" }
+            };
+            var silent = new[]
+            {
+                new[] { "Zoom.exe", "Zoom Meetings", "Zoom" },
+                new[] { "ms-teams.exe", "Microsoft Teams", "Microsoft Teams" },
+                new[] { "chrome.exe", "Google Chrome", "Google Chrome" },
+                new[] { "CiscoJabber.exe", "Cisco Jabber", "Cisco Jabber" },
+                new[] { "process 1234", "", "" }
+            };
+            foreach (string[] a in beeps)
+                if (!BeepAppList.Matches(webex, a[0], a[1], a[2])) errors.Add("missed " + a[0]);
+            foreach (string[] a in silent)
+                if (BeepAppList.Matches(webex, a[0], a[1], a[2])) errors.Add("wrongly matched " + a[0]);
+            if (!BeepAppList.Matches(new[] { BeepAppList.Everything }, "Zoom.exe", "Zoom Meetings", "Zoom")) errors.Add("* missed Zoom");
+            string[] list = BeepAppList.Clean(new[] { " Webex ", "Five9.exe", "", "webex", "Genesys" });
+            if (string.Join("|", list) != "Webex|Five9|Genesys") errors.Add("cleaned list " + string.Join("|", list));
+            if (!BeepAppList.Matches(list, "Five9Softphone.exe", "", "")) errors.Add("missed Five9Softphone.exe");
+            if (BeepAppList.Describe(list) != "Webex, Five9 or Genesys") errors.Add("described as " + BeepAppList.Describe(list));
+            if (!BeepAppList.IsEverything(new string[0])) errors.Add("an empty list did not beep for every app");
+            if (errors.Count > 0) return Fail(errors);
+            return "Webex in the app, Meetings and launcher; not Zoom, Teams, Chrome or Jabber; * is every app";
         }
 
         static string Seconds(List<long> starts, int rate)
@@ -1491,7 +1603,7 @@ namespace BeepTone
             float[] beep = BeepSynth.Create(rate, settings);
             float[] voice = SpeechLike(rate, 30, -20, 3);
             var sched = new BeepScheduler(beep, 13L * rate);
-            sched.Mix(voice, voice.Length, false, false);
+            sched.Mix(voice, voice.Length, false, false, false);
             var det = new ToneDetector(rate, 1400, 20);
             var finder = new BeepBurstFinder(det.BlockSeconds, 0.08, 0.5);
             double threshold = settings.PeakGain() * Math.Pow(10, -15 / 20.0);
@@ -1667,10 +1779,11 @@ namespace BeepTone
             Check(errors, "no beep yet, young", WatchdogPolicy.Decide(hb(1, "running", -1), true, 20, now, 13, false, out reason), WatchdogAction.None);
             Check(errors, "missing microphone", WatchdogPolicy.Decide(hb(1, "reconnecting", -1), true, 600, now, 13, false, out reason), WatchdogAction.None);
             Check(errors, "paused", WatchdogPolicy.Decide(hb(1, "paused", 400), true, 600, now, 13, false, out reason), WatchdogAction.None);
+            Check(errors, "waiting for a call", WatchdogPolicy.Decide(hb(1, "waiting", 4000), true, 600, now, 13, false, out reason), WatchdogAction.None);
             Check(errors, "waiting for setup", WatchdogPolicy.Decide(hb(1, "setup", -1), true, 600, now, 13, false, out reason), WatchdogAction.None);
             Check(errors, "paused but hung", WatchdogPolicy.Decide(hb(45, "paused", 400), true, 600, now, 13, false, out reason), WatchdogAction.Restart);
             if (errors.Count > 0) return Fail(errors);
-            return "10 cases";
+            return "11 cases";
         }
 
         static void Check(List<string> errors, string name, WatchdogAction got, WatchdogAction want)

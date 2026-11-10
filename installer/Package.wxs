@@ -37,6 +37,7 @@
     <Property Id="ALLOWSTOP" Secure="yes" />
     <Property Id="ALLOWQUIT" Secure="yes" />
     <Property Id="IGNOREDMICAPPS" Secure="yes" />
+    <Property Id="BEEPAPPS" Secure="yes" />
     <Property Id="SETUPPASSWORDHASH" Secure="yes" Hidden="yes" />
     <Property Id="CABLEPACKURL" Secure="yes" />
 
@@ -145,6 +146,9 @@
       </Component>
       <Component Id="PolicyIgnoredApps" Condition="IGNOREDMICAPPS">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="IgnoredMicApps" Value="[IGNOREDMICAPPS]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="PolicyBeepApps" Condition="BEEPAPPS">
+        <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="BeepApps" Value="[BEEPAPPS]" Type="string" KeyPath="yes" />
       </Component>
       <Component Id="PolicyCableUrl" Condition="CABLEPACKURL">
         <RegistryValue Root="HKLM" Key="Software\Policies\BeepTone" Name="CablePackUrl" Value="[CABLEPACKURL]" Type="string" KeyPath="yes" />

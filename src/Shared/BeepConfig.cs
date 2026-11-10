@@ -117,8 +117,22 @@ namespace BeepTone
 
         public static string[] IgnoredMicApps()
         {
+            return ReadList("IgnoredMicApps");
+        }
+
+        // Kept in policy, not config.json, because agents can edit config.json and an emptied or
+        // misspelled list would take the beep off Webex calls.
+        public static string[] BeepApps()
+        {
+            string[] list = BeepAppList.Clean(ReadList("BeepApps"));
+            return list.Length > 0 ? list : new string[] { BeepAppList.Default };
+        }
+
+        // A comma, semicolon or line separated string, or a multi-string value.
+        static string[] ReadList(string name)
+        {
             object value;
-            if (!TryGet("IgnoredMicApps", out value)) return new string[0];
+            if (!TryGet(name, out value)) return new string[0];
             var items = new List<string>();
             var many = value as string[];
             string[] entries = many ?? new string[] { Convert.ToString(value, CultureInfo.InvariantCulture) };
@@ -528,6 +542,11 @@ namespace BeepTone
                 lines.Add(farIgnored && nearKept
                     ? "PASS pause file: a normal pause is kept, a years-long pause is removed"
                     : "FAIL pause file: far ignored=" + farIgnored + ", near kept=" + nearKept);
+
+                string beepApps = string.Join(", ", BeepPolicy.BeepApps());
+                lines.Add(beepApps == BeepAppList.Default
+                    ? "PASS beep apps: only " + BeepAppList.Default + " gets the beep when policy does not set BeepApps"
+                    : "FAIL beep apps: without policy the list is '" + beepApps + "'");
             }
             catch (Exception ex)
             {

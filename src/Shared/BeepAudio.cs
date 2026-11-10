@@ -512,8 +512,15 @@ namespace BeepTone
         public string RenderName = "CABLE Input";
         public BeepSettings Settings = new BeepSettings();
         public string[] IgnoredMicApps = new string[0];
+        // Apps whose calls get the beep (policy BeepApps). The beep plays only while one of them is
+        // recording from the cable.
+        public string[] BeepApps = new string[] { BeepAppList.Default };
+        // Beeps on the schedule whoever is using the cable, for test-mix.
+        public bool AlwaysBeep;
 
         int beepRequested;
+        int callActive;
+        long callCheckedTicks;
         int restartRequested;
         int stopRequested;
         int beepPaused;
@@ -528,9 +535,13 @@ namespace BeepTone
         string bypassProblem;
         string verifyProblem;
         string cableUsers = "";
+        string cableUsersLogged;
+        string callApps = "";
         string restartReason;
         long lastBeepTicks = -1;
         long runningSinceTicks = -1;
+        long callSinceTicks = -1;
+        int callCheckFailures;
         long sessionTicks = -1;
         int beepCount;
         int heardCount;
@@ -542,12 +553,13 @@ namespace BeepTone
         AudioEndpoint activeCapture;
         AudioEndpoint activeRender;
         AudioEndpoint activeTap;
+        // The cable's recording side, which the softphone uses as its microphone.
+        AudioEndpoint activeCable;
         bool usingPreferred = true;
         string resolvedCaptureId;
         string resolvedRenderId;
         string lastFallbackId;
-        readonly Dictionary<int, string> processNames = new Dictionary<int, string>();
-        readonly Dictionary<int, string> appNames = new Dictionary<int, string>();
+        readonly Dictionary<int, AppInfo> appInfo = new Dictionary<int, AppInfo>();
 
         public string Status { get { lock (gate) return status; } }
         public bool IsRunning { get { lock (gate) return running; } }
@@ -559,6 +571,21 @@ namespace BeepTone
         public string BypassProblem { get { lock (gate) return bypassProblem ?? ""; } }
         public string VerifyProblem { get { lock (gate) return verifyProblem ?? ""; } }
         public string CableUsers { get { lock (gate) return cableUsers; } }
+        // The apps on the beep list that are using the cable now, by the names people know them by.
+        public string CallApps { get { lock (gate) return callApps; } }
+        // "Webex", or "Webex or Five9"; empty when every app gets the beep.
+        public string BeepAppsText { get { return BeepAppList.Describe(BeepApps); } }
+
+        // True while an app on the beep list is recording from the cable, so a call needs the beep. Also
+        // true when the check has not finished for 10 seconds, so a stuck check fails toward the beep.
+        public bool CallActive
+        {
+            get
+            {
+                if (AlwaysBeep || Interlocked.CompareExchange(ref callActive, 0, 0) != 0) return true;
+                return clock.ElapsedTicks - Interlocked.Read(ref callCheckedTicks) > 10 * Stopwatch.Frequency;
+            }
+        }
         public bool UsingPreferredCapture { get { lock (gate) return usingPreferred; } }
         public string ActiveCaptureName { get { lock (gate) return activeCapture == null ? "" : activeCapture.Name; } }
         public string ActiveRenderName { get { lock (gate) return activeRender == null ? "" : activeRender.Name; } }
@@ -566,15 +593,21 @@ namespace BeepTone
         public string ResolvedRenderId { get { lock (gate) return resolvedRenderId ?? ""; } }
         public bool CanVerify { get { lock (gate) return activeTap != null; } }
 
+        // Seconds a call has gone without a beep: since the last beep, the call starting, or the mixer
+        // starting, whichever was last. -1 when no call needs the beep or the mixer is not running.
         // Monotonic, so clock changes and daylight saving cannot fake or hide a missed beep.
-        public double SecondsSinceLastBeep
+        public double SecondsWithoutBeep
         {
-            get { lock (gate) return lastBeepTicks < 0 ? -1 : (clock.ElapsedTicks - lastBeepTicks) / (double)Stopwatch.Frequency; }
-        }
-
-        public double SecondsRunning
-        {
-            get { lock (gate) return runningSinceTicks < 0 ? -1 : (clock.ElapsedTicks - runningSinceTicks) / (double)Stopwatch.Frequency; }
+            get
+            {
+                if (!CallActive) return -1;
+                lock (gate)
+                {
+                    if (!running || runningSinceTicks < 0) return -1;
+                    long from = Math.Max(lastBeepTicks, Math.Max(callSinceTicks, runningSinceTicks));
+                    return (clock.ElapsedTicks - from) / (double)Stopwatch.Frequency;
+                }
+            }
         }
 
         public DateTime LastBeepLocal
@@ -594,7 +627,13 @@ namespace BeepTone
                 {
                     if (disabled) return BeepTone.HeartbeatState.Stopped;
                     if (IsBeepPaused) return BeepTone.HeartbeatState.Paused;
-                    return running ? BeepTone.HeartbeatState.Running : BeepTone.HeartbeatState.Reconnecting;
+                    if (!running) return BeepTone.HeartbeatState.Reconnecting;
+                    if (!CallActive) return BeepTone.HeartbeatState.Waiting;
+                    // The first beep of a call follows within milliseconds. Until it does, the last beep
+                    // is from an earlier call, and a watchdog reading it would restart a healthy mixer.
+                    if (lastBeepTicks < callSinceTicks && clock.ElapsedTicks - callSinceTicks < 5 * Stopwatch.Frequency)
+                        return BeepTone.HeartbeatState.Waiting;
+                    return BeepTone.HeartbeatState.Running;
                 }
             }
         }
@@ -643,6 +682,7 @@ namespace BeepTone
 
         public void Start()
         {
+            Interlocked.Exchange(ref callCheckedTicks, clock.ElapsedTicks);
             if (Current == null) Current = this;
             BeepHeartbeat.Start();
             var thread = new Thread(Background);
@@ -774,6 +814,7 @@ namespace BeepTone
                 activeCapture = capture;
                 activeRender = render;
                 activeTap = null;
+                activeCable = tap;
                 usingPreferred = preferred;
                 if (preferred && (!string.IsNullOrEmpty(CaptureId) || !string.IsNullOrEmpty(CaptureName))) resolvedCaptureId = capture.Id;
                 resolvedRenderId = render.Id;
@@ -845,11 +886,16 @@ namespace BeepTone
 
         string lastMonitorError;
 
+        // Checks which apps use the cable twice a second, so a call gets its first beep within half a
+        // second of the softphone opening its microphone. The other checks run every 2 seconds.
         void Monitor()
         {
             WasapiNative.ComInit();
-            while (!stopEvent.WaitOne(2000))
+            int round = 0;
+            do
             {
+                MonitorStep("call check", CheckCall);
+                if (round++ % 4 != 0) continue;
                 if (AdminFlag.IsDisabled())
                 {
                     MarkDisabled();
@@ -858,7 +904,9 @@ namespace BeepTone
                 MonitorStep("app check", CheckApps);
                 MonitorStep("mute check", CheckMutes);
                 MonitorStep("microphone check", CheckPreferredReturned);
+                ForgetExitedApps();
             }
+            while (!stopEvent.WaitOne(500));
         }
 
         // Devices come and go between listing and opening them, so one failed check is normal.
@@ -874,11 +922,78 @@ namespace BeepTone
             }
         }
 
-        // An app recording straight from the headset skips the cable and has no beep.
+        // The beep reaches every app recording from the cable, so it plays only while an app on the beep
+        // list is one of them. Zoom or Teams on the cable by itself gets the microphone with no beep.
+        void CheckCall()
+        {
+            AudioEndpoint cable;
+            lock (gate) cable = activeCable;
+            if (cable == null) cable = AudioDevices.FindCableOutput();
+            if (cable == null)
+            {
+                SetCall(true, "", "the cable's recording side was not found, so the beep plays for whichever app is using it");
+                return;
+            }
+            int[] pids;
+            try
+            {
+                pids = AudioDevices.ActiveSessionProcessIds(cable.Id);
+                callCheckFailures = 0;
+            }
+            catch
+            {
+                // One failed check is normal while devices change. After 2 seconds of them, beep.
+                if (++callCheckFailures >= 4) SetCall(true, "", "cannot see which apps are using the cable, so the beep plays for whichever app is using it");
+                throw;
+            }
+            string[] list = BeepApps;
+            var users = new List<string>();
+            var callers = new List<string>();
+            var details = new List<string>();
+            foreach (int pid in pids)
+            {
+                if (pid == ProcessId) continue;
+                AppInfo app = Identify(pid);
+                if (!users.Contains(app.Name)) users.Add(app.Name);
+                bool beeps = !IsAlwaysIgnored(app.Exe) && BeepAppList.Matches(list, app.Exe, app.Description, app.Product);
+                if (beeps && !callers.Contains(app.Name)) callers.Add(app.Name);
+                details.Add(app.Describe() + (beeps ? " gets the beep" : " does not get the beep"));
+            }
+            string detail = string.Join("; ", details.ToArray());
+            bool changed;
+            lock (gate)
+            {
+                cableUsers = string.Join(", ", users.ToArray());
+                changed = detail != cableUsersLogged;
+                cableUsersLogged = detail;
+            }
+            // Names exactly as matched, so the beep list can be checked against them.
+            if (changed) BeepFiles.Log(details.Count > 0 ? "using the cable: " + detail : "no app is using the cable");
+            SetCall(callers.Count > 0, callers.Count > 0 ? JoinNames(callers) : "", null);
+        }
+
+        void SetCall(bool active, string apps, string why)
+        {
+            Interlocked.Exchange(ref callCheckedTicks, clock.ElapsedTicks);
+            bool was;
+            lock (gate)
+            {
+                was = callActive != 0;
+                if (active && !was) callSinceTicks = clock.ElapsedTicks;
+                callApps = apps;
+                Interlocked.Exchange(ref callActive, active ? 1 : 0);
+            }
+            if (active == was) return;
+            BeepFiles.Log(active
+                ? why ?? apps + " is using the cable, so the beep is on"
+                : "no app that gets the beep is using the cable, so the beep is off until one is");
+        }
+
+        // An app on the beep list that records straight from the headset skips the cable, so its calls
+        // have no beep. Other apps may use the headset directly, because their calls need no beep.
         void CheckApps()
         {
-            AudioEndpoint tap;
-            lock (gate) tap = activeTap;
+            string[] list = BeepApps;
             var apps = new List<string>();
             var details = new List<string>();
             bool headset = false;
@@ -890,23 +1005,11 @@ namespace BeepTone
                 foreach (int pid in pids)
                 {
                     if (pid == ProcessId) continue;
-                    string exe = ProcessName(pid);
-                    if (IsIgnored(exe)) continue;
-                    string app = AppName(pid, exe);
-                    if (!apps.Contains(app)) apps.Add(app);
-                    details.Add(exe + " (process " + pid.ToString(CultureInfo.InvariantCulture) + ") on '" + mic.Name + "'");
+                    AppInfo app = Identify(pid);
+                    if (IsIgnored(app.Exe) || !BeepAppList.Matches(list, app.Exe, app.Description, app.Product)) continue;
+                    if (!apps.Contains(app.Name)) apps.Add(app.Name);
+                    details.Add(app.Exe + " (process " + pid.ToString(CultureInfo.InvariantCulture) + ") on '" + mic.Name + "'");
                     if (mic.FormFactor == 5 || mic.FormFactor == 6) headset = true;
-                }
-            }
-            var users = new List<string>();
-            AudioEndpoint cable = tap ?? AudioDevices.FindCableOutput();
-            if (cable != null)
-            {
-                foreach (int pid in AudioDevices.ActiveSessionProcessIds(cable.Id))
-                {
-                    if (pid == ProcessId) continue;
-                    string app = AppName(pid, ProcessName(pid));
-                    if (!users.Contains(app)) users.Add(app);
                 }
             }
             string text = null;
@@ -922,7 +1025,6 @@ namespace BeepTone
             {
                 previous = bypassProblem;
                 bypassProblem = text;
-                cableUsers = string.Join(", ", users.ToArray());
             }
             if (text != previous)
             {
@@ -946,42 +1048,104 @@ namespace BeepTone
             return string.Join(", ", names.GetRange(0, names.Count - 1).ToArray()) + " and " + names[names.Count - 1];
         }
 
-        // The name people know an app by ("Cisco Webex", "Microsoft Teams"), from its file description.
-        string AppName(int pid, string exe)
+        sealed class AppInfo
         {
-            string name;
-            if (appNames.TryGetValue(pid, out name)) return name;
-            name = exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? exe.Substring(0, exe.Length - 4) : exe;
-            try
+            public string Exe;
+            public string Description = "";
+            public string Product = "";
+            // The name people know the app by ("Cisco Webex Meetings", "Microsoft Teams"): its file
+            // description, or its program file without ".exe".
+            public string Name;
+            public long SeenTicks;
+
+            public string Describe()
             {
-                string description = Process.GetProcessById(pid).MainModule.FileVersionInfo.FileDescription;
-                if (!string.IsNullOrWhiteSpace(description)) name = description.Trim();
+                string product = Product.Length > 0 && Product != Name ? ", product '" + Product + "'" : "";
+                return "'" + Name + "' (" + Exe + product + ")";
             }
-            catch { }
-            if (appNames.Count > 200) appNames.Clear();
-            appNames[pid] = name;
-            return name;
         }
 
-        string ProcessName(int pid)
+        // Who a process is, from its program file's version information. Kept while the process keeps
+        // showing up and forgotten soon after it stops, so a reused process ID is looked up again.
+        AppInfo Identify(int pid)
         {
-            string name;
-            if (processNames.TryGetValue(pid, out name)) return name;
-            try { name = Process.GetProcessById(pid).ProcessName + ".exe"; }
-            catch { name = "process " + pid.ToString(CultureInfo.InvariantCulture); }
-            if (processNames.Count > 200) processNames.Clear();
-            processNames[pid] = name;
-            return name;
+            AppInfo info;
+            if (!appInfo.TryGetValue(pid, out info))
+            {
+                info = new AppInfo { Exe = "process " + pid.ToString(CultureInfo.InvariantCulture) };
+                string path = ImagePath(pid);
+                if (path != null)
+                {
+                    info.Exe = System.IO.Path.GetFileName(path);
+                    try
+                    {
+                        FileVersionInfo version = FileVersionInfo.GetVersionInfo(path);
+                        info.Description = (version.FileDescription ?? "").Trim();
+                        info.Product = (version.ProductName ?? "").Trim();
+                    }
+                    catch { }
+                }
+                else
+                {
+                    try { info.Exe = Process.GetProcessById(pid).ProcessName + ".exe"; }
+                    catch { }
+                }
+                info.Name = info.Description.Length > 0 ? info.Description
+                    : info.Exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? info.Exe.Substring(0, info.Exe.Length - 4) : info.Exe;
+                appInfo[pid] = info;
+            }
+            info.SeenTicks = clock.ElapsedTicks;
+            return info;
         }
+
+        void ForgetExitedApps()
+        {
+            long cutoff = clock.ElapsedTicks - 10 * Stopwatch.Frequency;
+            var gone = new List<int>();
+            foreach (KeyValuePair<int, AppInfo> pair in appInfo)
+                if (pair.Value.SeenTicks < cutoff) gone.Add(pair.Key);
+            foreach (int pid in gone) appInfo.Remove(pid);
+        }
+
+        // Needs only limited access, so it works for elevated and 32-bit processes too.
+        static string ImagePath(int pid)
+        {
+            IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+            if (process == IntPtr.Zero) return null;
+            try
+            {
+                var path = new System.Text.StringBuilder(1024);
+                int size = path.Capacity;
+                return QueryFullProcessImageName(process, 0, path, ref size) ? path.ToString(0, size) : null;
+            }
+            finally { CloseHandle(process); }
+        }
+
+        const int ProcessQueryLimitedInformation = 0x1000;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(int access, bool inheritHandle, int processId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool QueryFullProcessImageName(IntPtr process, int flags, System.Text.StringBuilder name, ref int size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr handle);
 
         // The Sound control panel (rundll32) and Settings open every microphone for their level meters.
         // Another copy of Beep Tone (a second signed-in user, or a test mix) is mixing the beep itself.
         static readonly string[] AlwaysIgnored = new string[] { "rundll32.exe", "SystemSettings.exe", "BeepTone.exe", "BeepToneCtl.exe" };
 
-        bool IsIgnored(string processName)
+        static bool IsAlwaysIgnored(string processName)
         {
             foreach (string item in AlwaysIgnored)
                 if (string.Equals(item, processName, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        bool IsIgnored(string processName)
+        {
+            if (IsAlwaysIgnored(processName)) return true;
             string[] ignored = IgnoredMicApps ?? new string[0];
             foreach (string item in ignored)
             {
@@ -1265,7 +1429,7 @@ namespace BeepTone
             if (want <= 0) return false;
             if (want > output.Length) want = output.Length;
             core.Read(output, want);
-            int started = scheduler.Mix(output, want, mixer.IsBeepPaused, mixer.ConsumeBeepRequest());
+            int started = scheduler.Mix(output, want, mixer.IsBeepPaused, !mixer.CallActive, mixer.ConsumeBeepRequest());
             SoftLimiter.Apply(output, want);
             IntPtr data;
             WasapiNative.Check(render.GetBuffer(want, out data), "render GetBuffer");

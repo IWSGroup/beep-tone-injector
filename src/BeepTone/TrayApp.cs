@@ -65,12 +65,12 @@ namespace BeepTone
             pauseItem = new ToolStripMenuItem(PauseLabel()) { Visible = BeepPolicy.AllowPause };
             menu.Items.Add(statusItem);
             menu.Items.Add(cableItem);
-            beepItem = menu.Items.Add("Beep now", null, delegate { BeepNow(); });
+            beepItem = menu.Items.Add("Test beep on the other end", null, delegate { TestBeepOtherEnd(); });
             menu.Items.Add(pauseItem);
             stopItem = new ToolStripMenuItem("Stop beep...") { Visible = BeepPolicy.AllowStop };
             stopItem.Click += delegate { ToggleStop(); };
             menu.Items.Add(stopItem);
-            menu.Items.Add("Hear beep on this PC", null, delegate { PlayLocalBeep(); });
+            menu.Items.Add("Test beep on my end only", null, delegate { PlayLocalBeep(); });
             menu.Items.Add("Setup", null, delegate { ShowSetup(); });
             menu.Items.Add("Open readme", null, delegate { OpenReadme(); });
             menu.Items.Add("Open log", null, delegate { OpenLog(); });
@@ -191,10 +191,17 @@ namespace BeepTone
             mixer.RenderId = config.RenderDeviceId;
             mixer.RenderName = config.RenderDeviceName;
             mixer.Settings = config.ToSettings();
-            mixer.IgnoredMicApps = BeepPolicy.IgnoredMicApps();
+            ApplyPolicyLists();
         }
 
-        void BeepNow()
+        void ApplyPolicyLists()
+        {
+            mixer.IgnoredMicApps = BeepPolicy.IgnoredMicApps();
+            mixer.BeepApps = BeepPolicy.BeepApps();
+        }
+
+        // Into the call, even with no Webex call on. The agent does not hear it.
+        void TestBeepOtherEnd()
         {
             if (!Paused && mixer != null) mixer.RequestBeep();
         }
@@ -445,15 +452,10 @@ namespace BeepTone
             string verify = mixer.VerifyProblem;
             if (verify.Length > 0) return new Alert { Text = verify };
             if (status != "Running") return null;
-            int limit = mixer.Settings.IntervalSeconds + 5;
-            double age = mixer.SecondsSinceLastBeep;
-            if (age >= 0)
-            {
-                if (age > limit) return new Alert { Text = "No beep has gone out for " + (int)age + " seconds, so calls may not have it." };
-                return null;
-            }
-            if (mixer.SecondsRunning > limit)
-                return new Alert { Text = "No beep has gone out since Beep Tone started, so calls may not have it." };
+            // -1 between calls, when there is no beep to miss.
+            double age = mixer.SecondsWithoutBeep;
+            if (age > mixer.Settings.IntervalSeconds + 5)
+                return new Alert { Text = "No beep has gone out for " + (int)age + " seconds, so the call may not have it." };
             return null;
         }
 
@@ -498,11 +500,18 @@ namespace BeepTone
             {
                 string status = mixer.Status;
                 DateTime last = mixer.LastBeepLocal;
-                if (status == "Running")
+                if (status == "Running" && mixer.CallActive)
                 {
                     string stamp = last > DateTime.MinValue ? " Last beep " + last.ToString("HH:mm:ss", CultureInfo.InvariantCulture) : "";
-                    text = "Beep tone running." + stamp;
-                    menu = "Running." + stamp;
+                    string apps = mixer.CallApps;
+                    text = "Beep tone on." + stamp;
+                    menu = (apps.Length > 0 ? "Beeping for " + apps + "." : "Beeping.") + stamp;
+                }
+                else if (status == "Running")
+                {
+                    string list = mixer.BeepAppsText;
+                    menu = list.Length > 0 ? "Waiting for a call in " + list + ". No beep until then." : "Waiting for an app to use the cable. No beep until then.";
+                    text = list.Length > 0 ? "Beep tone waiting for a call in " + list : "Beep tone waiting for an app to use the cable";
                 }
                 else if (status == "Reconnecting")
                 {
@@ -599,6 +608,8 @@ namespace BeepTone
                         suppressAlertUntilBeep = false;
                     }
                 }
+                // A pause that ends between calls has no beep to wait for.
+                if (!mixer.CallActive) suppressAlertUntilBeep = false;
             }
             Alert alert = GetAlert();
             iconWarning = paused || alert != null;
@@ -625,6 +636,8 @@ namespace BeepTone
                 UpdateAlert(alert);
             }
             if (ticks % 10 == 0) SyncDeviceIds();
+            // Picks up policy changes, such as a new beep list, without a restart.
+            if (ticks % 30 == 0 && mixer != null) ApplyPolicyLists();
             // .NET waits for its first stage to fill before collecting, and on CPUs with large caches that
             // is tens of MB, so memory looked like it grew all shift. The heap is about 2 MB, so a full
             // collection once a minute takes around a millisecond and keeps memory flat.

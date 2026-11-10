@@ -188,7 +188,10 @@ namespace BeepTone
                 RenderId = config.RenderDeviceId,
                 RenderName = config.RenderDeviceName,
                 Settings = config.ToSettings(),
-                IgnoredMicApps = BeepPolicy.IgnoredMicApps()
+                IgnoredMicApps = BeepPolicy.IgnoredMicApps(),
+                BeepApps = BeepPolicy.BeepApps(),
+                // The test beeps with or without a call on, so it works with no softphone open.
+                AlwaysBeep = true
             };
             Console.WriteLine("Testing for " + seconds + " seconds: " + config.FrequencyHz + " Hz every " + config.IntervalSeconds
                 + " s at " + config.LevelDbfs + " dBFS.");
