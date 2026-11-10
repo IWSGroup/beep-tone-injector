@@ -273,6 +273,39 @@ namespace BeepTone
 
         public static bool IsMuted(string deviceId)
         {
+            return WithEndpointVolume(deviceId, delegate (IAudioEndpointVolume volume)
+            {
+                int muted;
+                return volume.GetMute(out muted) >= 0 && muted != 0;
+            });
+        }
+
+        // Sets the device's level, every channel, back to 100 if anything turned it down. Returns the
+        // level it found ("at 35"), or null when it was already at 100. Mute is left alone, because
+        // softphones and mute keys mute the cable on purpose; CheckMutes reports that instead.
+        public static string HoldFullLevel(string deviceId)
+        {
+            return WithEndpointVolume(deviceId, delegate (IAudioEndpointVolume volume)
+            {
+                float lowest;
+                WasapiNative.Check(volume.GetMasterVolumeLevelScalar(out lowest), "GetMasterVolumeLevelScalar");
+                uint channels;
+                if (volume.GetChannelCount(out channels) < 0) channels = 0;
+                for (uint c = 0; c < channels; c++)
+                {
+                    float level;
+                    if (volume.GetChannelVolumeLevelScalar(c, out level) >= 0 && level < lowest) lowest = level;
+                }
+                if (lowest >= WasapiNative.FullLevel) return null;
+                Guid context = WasapiNative.SessionGuid;
+                WasapiNative.Check(volume.SetMasterVolumeLevelScalar(1f, ref context), "SetMasterVolumeLevelScalar");
+                for (uint c = 0; c < channels; c++) volume.SetChannelVolumeLevelScalar(c, 1f, ref context);
+                return "at " + WasapiNative.Percent(lowest);
+            });
+        }
+
+        static T WithEndpointVolume<T>(string deviceId, Func<IAudioEndpointVolume, T> use)
+        {
             IMMDevice device = WasapiNative.OpenDevice(deviceId);
             try
             {
@@ -282,10 +315,8 @@ namespace BeepTone
                 try
                 {
                     var volume = (IAudioEndpointVolume)Marshal.GetTypedObjectForIUnknown(ptr, typeof(IAudioEndpointVolume));
-                    int muted;
-                    int hr = volume.GetMute(out muted);
-                    Marshal.ReleaseComObject(volume);
-                    return hr >= 0 && muted != 0;
+                    try { return use(volume); }
+                    finally { Marshal.ReleaseComObject(volume); }
                 }
                 finally { Marshal.Release(ptr); }
             }
@@ -560,6 +591,13 @@ namespace BeepTone
         string resolvedRenderId;
         string lastFallbackId;
         readonly Dictionary<int, AppInfo> appInfo = new Dictionary<int, AppInfo>();
+        readonly Dictionary<string, LevelHold> levelHolds = new Dictionary<string, LevelHold>();
+
+        sealed class LevelHold
+        {
+            public long LoggedTicks;
+            public int Unlogged;
+        }
 
         public string Status { get { lock (gate) return status; } }
         public bool IsRunning { get { lock (gate) return running; } }
@@ -876,7 +914,9 @@ namespace BeepTone
                 missedInARow++;
                 if (missedInARow >= 2 && verifyProblem == null)
                 {
-                    verifyProblem = "The beep is not reaching the softphone at full level. In Windows Sound settings, set CABLE Input and CABLE Output to 100.";
+                    // Beep Tone holds the cable's levels at 100 itself, so what is left is usually a
+                    // softphone turning its microphone down faster than that.
+                    verifyProblem = "The beep is not reaching the softphone at full level. Turn off automatic microphone volume in the softphone.";
                     raise = true;
                 }
             }
@@ -884,10 +924,36 @@ namespace BeepTone
             if (raise) BeepFiles.Log("beep problem: two beeps in a row did not reach " + where);
         }
 
+        // A level was turned down and has been set back to 100. Logged the first time, then at most once
+        // a minute with a count, so a softphone that keeps turning its microphone down cannot flood the log.
+        internal void NoteLevelHeld(string what, string found)
+        {
+            string line = null;
+            lock (gate)
+            {
+                LevelHold hold;
+                if (!levelHolds.TryGetValue(what, out hold))
+                {
+                    hold = new LevelHold { LoggedTicks = clock.ElapsedTicks - 60 * Stopwatch.Frequency };
+                    levelHolds[what] = hold;
+                }
+                hold.Unlogged++;
+                if (clock.ElapsedTicks - hold.LoggedTicks >= 60 * Stopwatch.Frequency)
+                {
+                    line = what + " was " + found + "; put it back to full volume, because turning it down turns the beep down too"
+                        + (hold.Unlogged > 1 ? " (" + hold.Unlogged.ToString(CultureInfo.InvariantCulture) + " times since the last note)" : "");
+                    hold.Unlogged = 0;
+                    hold.LoggedTicks = clock.ElapsedTicks;
+                }
+            }
+            if (line != null) BeepFiles.Log(line);
+        }
+
         string lastMonitorError;
 
         // Checks which apps use the cable twice a second, so a call gets its first beep within half a
-        // second of the softphone opening its microphone. The other checks run every 2 seconds.
+        // second of the softphone opening its microphone, and puts the cable's levels back just as fast.
+        // The other checks run every 2 seconds.
         void Monitor()
         {
             WasapiNative.ComInit();
@@ -895,6 +961,7 @@ namespace BeepTone
             do
             {
                 MonitorStep("call check", CheckCall);
+                MonitorStep("level check", HoldCableLevels);
                 if (round++ % 4 != 0) continue;
                 if (AdminFlag.IsDisabled())
                 {
@@ -1157,6 +1224,29 @@ namespace BeepTone
             return false;
         }
 
+        // CABLE Input and CABLE Output stay at 100 in Windows. Turning either down, in Sound settings or
+        // with the softphone's microphone slider, would turn the beep down with the voice. To make the
+        // agent quieter, turn down the headset microphone instead, which leaves the beep alone.
+        void HoldCableLevels()
+        {
+            AudioEndpoint render, cable;
+            lock (gate)
+            {
+                if (!running) return;
+                render = activeRender;
+                cable = activeCable;
+            }
+            HoldCableLevel(render);
+            HoldCableLevel(cable);
+        }
+
+        void HoldCableLevel(AudioEndpoint device)
+        {
+            if (device == null) return;
+            string found = AudioDevices.HoldFullLevel(device.Id);
+            if (found != null) NoteLevelHeld(AudioDevices.ShortName(device.Name) + "'s level in Windows", found);
+        }
+
         void CheckMutes()
         {
             AudioEndpoint render, tap;
@@ -1197,6 +1287,7 @@ namespace BeepTone
         IAudioClient captureClient, renderClient, tapClient;
         IAudioCaptureClient capture, tap;
         IAudioRenderClient render;
+        ISimpleAudioVolume captureVolume, renderVolume, tapVolume;
         FormatInfo captureFormat, renderFormat, tapFormat;
         readonly AutoResetEvent captureEvent = new AutoResetEvent(false);
         readonly AutoResetEvent renderEvent = new AutoResetEvent(false);
@@ -1236,6 +1327,8 @@ namespace BeepTone
             if (renderTargetFrames > renderBufferFrames - periodFrames) renderTargetFrames = Math.Max(periodFrames, renderBufferFrames - periodFrames);
             capture = WasapiNative.GetCapture(captureClient);
             render = WasapiNative.GetRender(renderClient);
+            captureVolume = WasapiNative.GetSessionVolume(captureClient, "the stream from " + captureEndpoint.Name);
+            renderVolume = WasapiNative.GetSessionVolume(renderClient, "the stream into " + renderEndpoint.Name);
             WasapiNative.TryDisableDucking(renderDevice, WasapiNative.SessionGuid);
 
             WasapiNative.Check(captureClient.GetBufferSize(out frames), "capture GetBufferSize");
@@ -1261,10 +1354,12 @@ namespace BeepTone
                 tap = WasapiNative.GetCapture(tapClient);
                 tapConverter = new SampleConverter(tapFormat, (int)frames);
                 tapMono = new float[frames];
+                tapVolume = WasapiNative.GetSessionVolume(tapClient, "the beep check on " + tapEndpoint.Name);
             }
             catch (Exception ex)
             {
                 BeepFiles.Log("cannot check the beep on '" + tapEndpoint.Name + "': " + WasapiNative.Describe(ex));
+                Release(tapVolume); tapVolume = null;
                 Release(tap); tap = null;
                 Release(tapClient); tapClient = null;
                 Release(tapDevice); tapDevice = null;
@@ -1329,6 +1424,9 @@ namespace BeepTone
                 : new IntPtr[] { Raw(captureEvent), Raw(renderEvent) };
             long lastRenderProgress = mixer.Now;
             long nextStats = mixer.Now + (long)(600 * freq);
+            // At once, because Windows keeps a stream's Volume mixer setting while Beep Tone runs, so a
+            // reopened stream starts wherever someone left the slider.
+            long nextLevelCheck = 0;
             // Windows often flags the first packet after Start as a discontinuity; that is not a glitch.
             core.ResetStats();
             captureGlitches = 0;
@@ -1356,6 +1454,12 @@ namespace BeepTone
                             mixer.NoteMissed(toneDb, tapEndpoint.Name);
                         }
                     }
+                }
+
+                if (now >= nextLevelCheck)
+                {
+                    HoldStreamLevels();
+                    nextLevelCheck = now + (long)(0.5 * freq);
                 }
 
                 if ((now - lastCapture) / freq > StallSeconds)
@@ -1390,6 +1494,23 @@ namespace BeepTone
         static IntPtr Raw(WaitHandle handle)
         {
             return handle.SafeWaitHandle.DangerousGetHandle();
+        }
+
+        // Beep Tone's rows in the Windows Volume mixer. Turning one down or muting it would turn the
+        // beep down with the voice, so each goes straight back to 100. The softphone's mute still works.
+        void HoldStreamLevels()
+        {
+            HoldStreamLevel(renderVolume, "the stream into ", renderEndpoint);
+            HoldStreamLevel(captureVolume, "the stream from ", captureEndpoint);
+            if (tap != null) HoldStreamLevel(tapVolume, "the beep check on ", tapEndpoint);
+        }
+
+        // Builds the log text only when something was put back, so the audio loop makes no garbage.
+        void HoldStreamLevel(ISimpleAudioVolume volume, string what, AudioEndpoint device)
+        {
+            if (volume == null) return;
+            string found = WasapiNative.HoldFull(volume);
+            if (found != null) mixer.NoteLevelHeld("Beep Tone's volume for " + what + device.Name, found);
         }
 
         bool DrainCapture(MixCore core)
@@ -1495,6 +1616,9 @@ namespace BeepTone
             try { if (captureStarted) captureClient.Stop(); } catch { }
             try { if (renderStarted) renderClient.Stop(); } catch { }
             try { if (tapStarted) tapClient.Stop(); } catch { }
+            Release(captureVolume);
+            Release(renderVolume);
+            Release(tapVolume);
             Release(capture);
             Release(render);
             Release(tap);
@@ -1949,13 +2073,17 @@ namespace BeepTone
             IntPtr unknown = IntPtr.Zero;
             IntPtr client2Ptr = IntPtr.Zero;
             IntPtr props = IntPtr.Zero;
+            object wrapper = null;
             try
             {
                 unknown = Marshal.GetIUnknownForObject(client);
                 Guid iid = typeof(IAudioClient2).GUID;
                 int hr = Marshal.QueryInterface(unknown, ref iid, out client2Ptr);
                 if (hr < 0) return;
+                // This is the client's own wrapper with one more reference on it. Without giving that
+                // back, closing the stream left it open until the next garbage collection.
                 var client2 = (IAudioClient2)Marshal.GetTypedObjectForIUnknown(client2Ptr, typeof(IAudioClient2));
+                wrapper = client2;
                 var value = new AudioClientProperties();
                 value.cbSize = (uint)Marshal.SizeOf(typeof(AudioClientProperties));
                 value.bIsOffload = 0;
@@ -1972,6 +2100,7 @@ namespace BeepTone
             }
             finally
             {
+                if (wrapper != null) Marshal.ReleaseComObject(wrapper);
                 if (props != IntPtr.Zero) Marshal.FreeHGlobal(props);
                 if (client2Ptr != IntPtr.Zero) Marshal.Release(client2Ptr);
                 if (unknown != IntPtr.Zero) Marshal.Release(unknown);
@@ -1994,6 +2123,45 @@ namespace BeepTone
             Check(client.GetService(ref iid, out ptr), "GetService render");
             try { return (IAudioRenderClient)Marshal.GetTypedObjectForIUnknown(ptr, typeof(IAudioRenderClient)); }
             finally { Marshal.Release(ptr); }
+        }
+
+        // Levels at or above this count as 100, so rounding never starts a tug of war.
+        public const float FullLevel = 0.995f;
+
+        public static string Percent(float level)
+        {
+            return Math.Round(level * 100).ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        // The stream's own slider in the Windows Volume mixer, or null when Windows offers none.
+        public static ISimpleAudioVolume GetSessionVolume(IAudioClient client, string what)
+        {
+            Guid iid = typeof(ISimpleAudioVolume).GUID;
+            IntPtr ptr;
+            int hr = client.GetService(ref iid, out ptr);
+            if (hr < 0 || ptr == IntPtr.Zero)
+            {
+                BeepFiles.Log("cannot hold the volume of " + what + ": " + DescribeHr(hr));
+                return null;
+            }
+            try { return (ISimpleAudioVolume)Marshal.GetTypedObjectForIUnknown(ptr, typeof(ISimpleAudioVolume)); }
+            finally { Marshal.Release(ptr); }
+        }
+
+        // Sets a stream's Volume mixer slider back to 100 and unmutes it. Returns what it found
+        // ("at 35", "muted"), or null when it was already at 100 and not muted.
+        public static string HoldFull(ISimpleAudioVolume volume)
+        {
+            float level;
+            bool muted;
+            if (volume.GetMasterVolume(out level) < 0 || volume.GetMute(out muted) < 0) return null;
+            if (level >= FullLevel && !muted) return null;
+            Guid context = SessionGuid;
+            int hr = 0;
+            if (level < FullLevel) hr = volume.SetMasterVolume(1f, ref context);
+            if (muted && hr >= 0) hr = volume.SetMute(false, ref context);
+            string found = muted ? (level < FullLevel ? "muted at " + Percent(level) : "muted") : "at " + Percent(level);
+            return hr >= 0 ? found : found + " and could not be changed (" + DescribeHr(hr) + ")";
         }
 
         public static void TryDisableDucking(IMMDevice device, Guid sessionGuid)
@@ -2221,6 +2389,15 @@ namespace BeepTone
         [PreserveSig] int GetProcessId(out int processId);
         [PreserveSig] int IsSystemSoundsSession();
         [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+    }
+
+    [ComImport, Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ISimpleAudioVolume
+    {
+        [PreserveSig] int SetMasterVolume(float level, ref Guid context);
+        [PreserveSig] int GetMasterVolume(out float level);
+        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid context);
+        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
     }
 
     [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]

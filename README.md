@@ -165,7 +165,7 @@ The mix uses only the local microphone. The other person's voice is not mixed ba
 
 The beep is a tone inside the microphone signal. Noise removal, noise suppression, and automatic microphone volume treat that tone as noise. They make it louder, quieter, or drop it out as the other audio on the call changes.
 
-In Webex, set Settings, Audio, Smart audio, Microphone audio to **Music mode**. Leave Noise removal, Optimize for my voice, and Optimize for all voices off. Also turn off automatic microphone volume if that option is shown.
+In Webex, set Settings, Audio, Smart audio, Microphone audio to **Music mode**. Leave Noise removal, Optimize for my voice, and Optimize for all voices off. Also turn off automatic microphone volume if that option is shown. Otherwise Webex keeps turning CABLE Output down and Beep Tone keeps putting it back to 100.
 
 Any other softphone needs the same thing. Turn off noise removal, noise suppression, and automatic gain on the microphone that receives the cable.
 
@@ -199,16 +199,19 @@ While an administrator has the beep stopped, the menu shows **Turn beep on (admi
 
 **Test beep on the other end** plays one beep into the call, even between calls, and the next regular beep comes one interval after it. The agent does not hear it. **Test beep on my end only** plays the same tone through this computer's speakers or headset so the level can be checked, and does not send it into the call.
 
-Muting in the softphone mutes the beep, because the beep is part of the microphone signal the softphone receives. Muting CABLE Output in Windows, for example with a keyboard mute key, does the same, and the tray reports it. Muting the physical microphone in Windows or on the headset silences the voice but not the beep.
+Muting in the softphone mutes the beep, because the beep is part of the microphone signal the softphone receives. Muting CABLE Output in Windows, for example with a keyboard mute key, does the same, and the tray reports it. Muting the physical microphone in Windows or on the headset silences the voice but not the beep. Muting or turning down Beep Tone in the Volume mixer does nothing, because Beep Tone puts it straight back.
 
 ## What it checks while running
 
 - **The beep reaches the cable.** The mixer listens on CABLE Output and checks each beep at the set level. If two beeps in a row do not arrive, the tray turns red. The log records the level heard for every beep.
 - **No app skips the cable.** Every 2 seconds it looks for apps on the beep list recording from a physical microphone. Calls in such an app have no beep, so the tray turns red and names the app. Other apps, such as Zoom, may use the headset directly, because their calls need no beep. The Windows Sound control panel and Settings are ignored, because they open every microphone for their level meters. Policy `IgnoredMicApps` adds others.
 - **The cable is not muted.** A muted CABLE Input or CABLE Output in Windows is reported.
+- **Levels stay at 100.** Twice a second it puts CABLE Input and CABLE Output back to 100 in Windows, and Beep Tone's own rows in the Volume mixer back to 100 and unmuted. Turning any of them down, in Sound settings, the Volume mixer, or the softphone's microphone slider, would turn the beep down with the voice. To make an agent quieter, turn down the headset microphone instead, which leaves the beep alone. The log notes each level put back, at most once a minute for each. If CABLE Output keeps being turned down during calls, the softphone's automatic microphone volume is on, so turn it off.
 - **Default devices.** About every 15 seconds, and as soon as Windows changes a default, it sets CABLE Output back as the default microphone (when enabled). It also makes sure the cable Beep Tone plays into (CABLE Input) is not the default speaker, which would send the other party's voice back into the call. Any other speaker you choose, including other virtual devices such as VoiceMeeter, is left alone. Both are skipped during Remote Desktop.
 - **The saved microphone.** If it is unplugged, the mixer uses a headset, then the Windows default, then any other physical microphone. It switches back as soon as the saved one is connected again. A fallback is never saved as the new choice. Devices are matched by their Windows ID and then by name, so plugging the same headset into another port still works.
 - **The microphone is still sending.** If no audio arrives for a second, the mixer reopens the devices.
+
+Beep Tone appears in the Windows Volume mixer once for each device it has used since it started: the microphone, CABLE Input, CABLE Output, and the speakers after **Test beep on my end only**. Rows for recording have no slider. Windows keeps a row until Beep Tone exits, even after Beep Tone stops using that device, so a headset that switches devices during calls can add rows. Those rows do nothing and go away at the next sign-in.
 
 ## Keeping it running
 
